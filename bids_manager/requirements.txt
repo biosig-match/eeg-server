@@ -1,0 +1,8 @@
+flask
+gunicorn
+psycopg2-binary
+pandas
+numpy
+mne>=1.6
+mne-bids==0.14
+edfio

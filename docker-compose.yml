@@ -1,0 +1,91 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: erp_rabbitmq # 単一コンテナなので名前固定OK
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_MGMT_PORT}:15672" # Management UI
+      - "5672:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  db:
+    image: timescale/timescaledb-ha:pg16-ts2.14
+    container_name: erp_db # 単一コンテナなので名前固定OK
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  collector:
+    build: ./collector
+    container_name: erp_collector # 単一コンテナなので名前固定OK
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+
+  processor:
+    build: ./processor
+    # container_name: erp_processor  <-- ★★★ この行を削除しました ★★★
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    environment:
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+    deploy:
+      replicas: 2 # 複数起動するため、コンテナ名はDockerに自動採番させる
+
+  bids_manager:
+    build: ./bids_manager
+    container_name: erp_bids_manager # 単一コンテナなので名前固定OK
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+    volumes:
+      - ./bids_output:/app/bids_output
+
+  realtime_analyzer:
+    build: ./realtime_analyzer
+    container_name: erp_realtime_analyzer # 単一コンてなので名前固定OK
+    restart: unless-stopped
+    depends_on:
+      - rabbitmq
+    environment:
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+
+  ingress:
+    build: ./nginx
+    container_name: erp_ingress # 単一コンテナなので名前固定OK
+    ports:
+      - "${NGINX_PORT}:80"
+    depends_on:
+      - collector
+      - bids_manager
+      - realtime_analyzer
+
+volumes:
+  pg_data:

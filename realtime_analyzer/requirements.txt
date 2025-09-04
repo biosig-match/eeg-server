@@ -1,0 +1,9 @@
+flask
+gunicorn
+pika
+psycopg2-binary
+zstandard
+numpy
+mne
+mne-connectivity
+matplotlib
