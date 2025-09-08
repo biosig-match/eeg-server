@@ -1,0 +1,50 @@
+[tool.ruff]
+# Python 3.11 throughout the project (see Dockerfiles)
+target-version = "py311"
+line-length = 100
+
+# Keep default excludes and add project-specific outputs
+extend-exclude = [
+  "bids_output/**",
+  "**/.venv/**",
+  "**/.mypy_cache/**",
+  "**/__pycache__/**",
+]
+
+[tool.ruff.lint]
+# Base rule sets: pycodestyle errors/warnings (E/W), pyflakes (F),
+# isort (I), pyupgrade (UP), flake8-bugbear (B)
+select = ["E", "W", "F", "I", "UP", "B"]
+fixable = ["ALL"]
+
+[tool.ruff.format]
+# Align with Prettier width and LF newlines
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pyright]
+# Keep editor and CI in sync via pyproject-managed Pyright settings.
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+
+# Use local venv at ./.venv
+venvPath = "."
+venv = ".venv"
+
+# Limit analysis scope to our Python packages/scripts
+include = [
+  "bids_manager",
+  "processor",
+  "realtime_analyzer",
+  "tools/analysis",
+]
+exclude = [
+  "**/.venv/**",
+  "bids_output/**",
+  "**/__pycache__/**",
+]
+
+# Reduce noise from third-party libraries without type stubs
+reportMissingTypeStubs = "none"
+reportMissingImports = "warning"

@@ -1,11 +1,12 @@
 import argparse
+import re
 import sys
 from pathlib import Path
-import re
 
 import matplotlib.pyplot as plt
 import mne
 from mne_bids import BIDSPath, read_raw_bids
+
 
 def analyze_bids_data(bids_root_path: Path):
     """
@@ -20,9 +21,13 @@ def analyze_bids_data(bids_root_path: Path):
 
     try:
         # --- ★★★ ここから修正しました ★★★ ---
-        
+
         # 1. BIDSルートから最初の被験者ディレクトリを見つける
-        subjects = [d.name.split('-')[1] for d in bids_root_path.iterdir() if d.is_dir() and d.name.startswith('sub-')]
+        subjects = [
+            d.name.split("-")[1]
+            for d in bids_root_path.iterdir()
+            if d.is_dir() and d.name.startswith("sub-")
+        ]
         if not subjects:
             print("❌ Error: No subjects found in the BIDS directory.")
             sys.exit(1)
@@ -30,45 +35,51 @@ def analyze_bids_data(bids_root_path: Path):
         subject_path = bids_root_path / f"sub-{subject_id}"
 
         # 2. 被験者ディレクトリから最初のセッションディレクトリを見つける
-        sessions = [d.name.split('-')[1] for d in subject_path.iterdir() if d.is_dir() and d.name.startswith('ses-')]
+        sessions = [
+            d.name.split("-")[1]
+            for d in subject_path.iterdir()
+            if d.is_dir() and d.name.startswith("ses-")
+        ]
         if not sessions:
             print(f"❌ Error: No sessions found for subject '{subject_id}'.")
             sys.exit(1)
         session_id = sessions[0]
-        
+
         # 3. eegディレクトリ内のファイル名から最初のタスク名を見つける
         eeg_dir = subject_path / f"ses-{session_id}" / "eeg"
         task_name = None
-        for f in eeg_dir.glob('*_eeg.edf'):
-            match = re.search(r'task-([a-zA-Z0-9]+)_', f.name)
+        for f in eeg_dir.glob("*_eeg.edf"):
+            match = re.search(r"task-([a-zA-Z0-9]+)_", f.name)
             if match:
                 task_name = match.group(1)
                 break
-        
+
         if not task_name:
             print(f"❌ Error: No task found for subject '{subject_id}', session '{session_id}'.")
             sys.exit(1)
 
         # 4. すべての要素を使って、完全なBIDSPathを作成する
         bids_path = BIDSPath(
-            subject=subject_id, 
+            subject=subject_id,
             session=session_id,
             task=task_name,
-            root=bids_root_path, 
-            datatype='eeg'
+            root=bids_root_path,
+            datatype="eeg",
         )
-        
+
         # --- ★★★ 修正はここまで ★★★ ---
-        
-        print(f"🧠 Found subject '{subject_id}', session '{session_id}', and task '{task_name}'. Loading raw data...")
-        
+
+        print(
+            f"🧠 Found subject '{subject_id}', session '{session_id}', and task '{task_name}'. Loading raw data..."
+        )
+
         raw = read_raw_bids(bids_path=bids_path, verbose=False)
 
         print("\n✅ Data loaded successfully! Here is the summary:")
         print("-" * 50)
         print(raw)
         print("-" * 50)
-        
+
         # 出力ファイル名にタスク名も追加
         base_filename = f"sub-{subject_id}_ses-{session_id}_task-{task_name}"
 
@@ -91,7 +102,9 @@ def analyze_bids_data(bids_root_path: Path):
         # 3. イベント（アノテーション）のプロット
         if raw.annotations and len(raw.annotations) > 0:
             print("📌 Generating events plot...")
-            fig_events = raw.plot(show=False, events=mne.events_from_annotations(raw)[0], scalings=dict(eeg=100e-6))
+            fig_events = raw.plot(
+                show=False, events=mne.events_from_annotations(raw)[0], scalings=dict(eeg=100e-6)
+            )
             events_plot_path = bids_root_path / f"{base_filename}_events_plot.png"
             fig_events.savefig(events_plot_path, dpi=150)
             plt.close(fig_events)
@@ -103,15 +116,18 @@ def analyze_bids_data(bids_root_path: Path):
 
     except Exception as e:
         print(f"\n❌ An error occurred during analysis: {e}")
-        print("   Please ensure the BIDS data was generated correctly and all required libraries are installed.")
+        print(
+            "   Please ensure the BIDS data was generated correctly and all required libraries are installed."
+        )
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Read and visualize EEG data from a BIDS directory.")
+    parser = argparse.ArgumentParser(
+        description="Read and visualize EEG data from a BIDS directory."
+    )
     parser.add_argument(
-        "bids_root", 
-        type=str, 
-        help="Path to the root of the BIDS dataset (e.g., 'bids_output')."
+        "bids_root", type=str, help="Path to the root of the BIDS dataset (e.g., 'bids_output')."
     )
     args = parser.parse_args()
-    
+
     analyze_bids_data(Path(args.bids_root))
