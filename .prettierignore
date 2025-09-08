@@ -1,0 +1,16 @@
+# Node & build artifacts
+node_modules/
+dist/
+coverage/
+
+# Python
+**/__pycache__/
+**/.mypy_cache/
+**/.venv/
+
+# Project outputs
+bids_output/
+
+# VCS
+.git/
+

@@ -6,10 +6,10 @@ services:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
     ports:
-      - "${RABBITMQ_MGMT_PORT}:15672" # Management UI
-      - "5672:5672"
+      - '${RABBITMQ_MGMT_PORT}:15672' # Management UI
+      - '5672:5672'
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      test: ['CMD', 'rabbitmq-diagnostics', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,9 +25,9 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      - "5432:5432"
+      - '5432:5432'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
       interval: 5s
       timeout: 5s
       retries: 5
@@ -81,7 +81,7 @@ services:
     build: ./nginx
     container_name: erp_ingress # 単一コンテナなので名前固定OK
     ports:
-      - "${NGINX_PORT}:80"
+      - '${NGINX_PORT}:80'
     depends_on:
       - collector
       - bids_manager
