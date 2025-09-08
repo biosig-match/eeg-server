@@ -30,5 +30,9 @@
   "eslint.useFlatConfig": true,
   // Pyright (Pylance) settings — also mirrored in pyproject [tool.pyright]
   "python.languageServer": "Pylance",
-  "python.analysis.diagnosticMode": "workspace"
+  "python.analysis.diagnosticMode": "workspace",
+
+  // Use a single editor-only interpreter so Pylance resolves imports.
+  // On Windows, point to .venv\\Scripts\\python.exe instead.
+  "python.defaultInterpreterPath": ".venv/bin/python"
 }

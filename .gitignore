@@ -1,0 +1,24 @@
+# Python editor venv (do not commit)
+.venv/
+
+# Python caches
+**/__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytype/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+collector/node_modules/
+
+# Project outputs
+bids_output/
+
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# OS
+.DS_Store
