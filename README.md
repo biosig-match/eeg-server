@@ -233,29 +233,50 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
    - Prettier - Code formatter（ID: `esbenp.prettier-vscode`）
    - Remote - WSL（WSL で VSCode を使用する場合）
 
-2. Python ツール（WSL 内の仮想環境）
+2. Python ツール（エディタ用 .venv ｜ uv 推奨）
 
-   - ルート直下で仮想環境を作成し Ruff を導入
+   - 実行は Docker で行う一方、VSCode で「ライブラリが見つからない」警告を避けるため、
+     ルートにエディタ専用の `.venv` を用意します（Pylance 用）。uv で一括作成できます。
 
      ```bash
-     python3 -m venv .venv
-     source .venv/bin/activate
-     pip install -U pip ruff
+     # bash で実行してください（sh ではなく）
+     bash tools/dev/setup_py_dev_venv.sh
+     # Windows の場合は .venv\Scripts\python.exe がインタプリタパス
      ```
 
-   - VSCode のステータスバーから Python インタプリタに `.venv` を選択（Pylance が `pyproject.toml` の `[tool.pyright]` を自動で読み込みます）
+   - VSCode のインタプリタは `.venv/bin/python` を選択してください（`.vscode/settings.json` に既定値を設定済み）。
+     この .venv はエディタ解析専用であり、Docker 実行には影響しません。
+
+   - 補足（$ROOT_DIR について）: 開発用シェルスクリプトは、スクリプト自身の場所からプロジェクトルートを判定して `cd` するため、
+     どのディレクトリから実行しても同じように動きます（`.venv` の作成場所や相対パスの解決が安定します）。
+     常に `eeg-server` 直下で実行する運用でも問題ありません（例: `cd eeg-server && bash tools/dev/setup_py_dev_venv.sh`）。
 
 3. Node/TypeScript ツール（collector ディレクトリ）
 
    - Node.js は LTS (>=18) を推奨
-   - 必要な開発依存を追加
+
+   - エディタ用モジュール解決（必須・実行は Docker に非依存）
+
+     VSCode が `import` を解決できるよう、`collector` にローカルの `node_modules` を用意します。
+     ランタイムは Docker 側で完結するため、これはエディタ専用の導入です（`.gitignore` 済み）。
 
      ```bash
      cd collector
-     npm i -D eslint @eslint/js typescript-eslint eslint-config-prettier prettier
+     npm install --no-package-lock
      ```
 
-   - 用意済みのスクリプト
+     補足: `.vscode/settings.json` で `typescript.tsdk` を `collector/node_modules/typescript/lib` に設定済みです。
+
+   - Lint/Format のための開発依存（CLI 実行や VSCode の ESLint 拡張で必要）
+
+     ESLint Flat Config（`eslint.config.mjs`）を利用します。必要なパッケージを追加してください。
+
+     ```bash
+     cd collector
+     npm i -D eslint @eslint/js typescript-eslint eslint-config-prettier prettier globals
+     ```
+
+   - 用意済みのスクリプト（collector 内）
 
      ```bash
      # 整形（Prettier）
@@ -294,17 +315,39 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 
 `tools/dummy_data_sender.py`スクリプトを使って、システム全体の動作をエンドツーエンドでテストできます。
 
-1. **テスト用ライブラリのインストール:**
-   WSL2 のターミナルで、プロジェクトのルートディレクトリに移動し、以下を実行します。
+1. **テストの自動実行（インストール込み）:**
+   下記コマンドで、必要ライブラリの導入とテスト実行までを自動化しています（uv 使用）。
 
    ```bash
-   pip install websocket-client requests
+   # bash で実行してください（sh ではなく）
+   bash tools/dev/run_e2e_test.sh
    ```
 
-2. **テストスクリプトの実行:**
+   仕組み: ルートのエディタ用 `.venv` を作成/更新し、`tools/requirements.test.txt`（`requests`, `websocket-client`, `zstandard`）を追加でインストールしてから、`tools/dummy_data_sender.py` を実行します。
+
+   - サーバの Docker 上での立ち上げから行いたい場合は、Compose の起動とヘルスチェックも含めて実行できます。
+
+     ```bash
+     # ビルド込みで docker compose up -d 実行 → ヘルス待ち → テスト
+     bash tools/dev/run_e2e_test.sh --compose
+
+     # 既存のイメージを使い、ビルドを省略
+     bash tools/dev/run_e2e_test.sh --compose --no-build
+     ```
+
+     スクリプトは RabbitMQ/DB のヘルス（container_name: `erp_rabbitmq`, `erp_db`）を待機し、
+     さらに `http://localhost:${NGINX_PORT}/api/v1/health`（デフォルト 8080）へ到達可能になるまで待機します。
+     `.env` のポート設定を読み込みます。
+
+   補足（$ROOT_DIR について）: テスト用スクリプトも実行位置に依存せず動作します。`eeg-server` 直下から実行しても、他ディレクトリから相対/絶対パスで呼び出しても問題ありません。
+
+2. **（代替）手動実行:**
 
    ```bash
-   python3 tools/dummy_data_sender.py
+   # 依存導入
+   uv pip install -r tools/requirements.test.txt
+   # 実行
+   .venv/bin/python tools/dummy_data_sender.py
    ```
 
    スクリプトが実験の開始から BIDS エクスポート要求までを自動で行い、ターミナルに進捗が表示されます。
