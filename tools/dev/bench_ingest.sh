@@ -17,6 +17,11 @@ DURATION=30            # seconds
 REBUILD=true
 FRESH_DB=true
 CAPTURE_STATS=true
+CLIENTS=1             # number of parallel dummy senders
+DURATION=30            # seconds
+REBUILD=true
+FRESH_DB=true
+CAPTURE_STATS=true
 
 usage() {
   cat <<USAGE
@@ -24,6 +29,7 @@ Usage: bash tools/dev/bench_ingest.sh [options]
   --mode {baseline|optimized|both}  Which implementation(s) to benchmark (default: both)
   --replicas "1,2,4"                Comma-separated replica counts (default: 1,2,4)
   --duration SECONDS                Send duration for dummy sender (default: 30)
+  --clients N                       Parallel dummy senders (default: 1)
   --no-build                        Do not rebuild images before up
   --no-fresh                        Do not reset DB volumes between runs
   --no-stats                        Do not capture docker stats CPU snapshot
@@ -36,6 +42,7 @@ while [ $# -gt 0 ]; do
     --mode) MODES="$2"; shift ;;
     --replicas) REPLICAS_CSV="$2"; shift ;;
     --duration) DURATION="$2"; shift ;;
+    --clients) CLIENTS="$2"; shift ;;
     --no-build) REBUILD=false ;;
     --no-fresh) FRESH_DB=false ;;
     --no-stats) CAPTURE_STATS=false ;;
@@ -43,7 +50,7 @@ while [ $# -gt 0 ]; do
     *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
   esac
   shift
-end
+done
 
 dcmd() {
   if docker compose version >/dev/null 2>&1; then
@@ -104,9 +111,9 @@ wait_http_ok() {
 }
 
 prepare_py() {
-  echo "[py] Preparing .venv and test deps"
+  >&2 echo "[py] Preparing .venv and test deps"
   if ! command -v uv >/dev/null 2>&1; then
-    echo "[py] 'uv' not found. Install from https://docs.astral.sh/uv/" >&2
+    >&2 echo "[py] 'uv' not found. Install from https://docs.astral.sh/uv/"
     exit 1
   fi
   if [ ! -d .venv ]; then
@@ -117,7 +124,7 @@ prepare_py() {
   elif [ -x ./.venv/Scripts/python.exe ]; then
     PY=.venv/Scripts/python.exe
   else
-    echo "[py] Python in .venv not found" >&2
+    >&2 echo "[py] Python in .venv not found"
     exit 1
   fi
   bash tools/dev/setup_py_dev_venv.sh >/dev/null
@@ -179,8 +186,15 @@ bench_one() {
   eeg0=$(db_count eeg_raw_data || echo 0)
   imu0=$(db_count imu_raw_data || echo 0)
 
-  echo "[bench] Starting sender for ${duration}s"
-  EXPERIMENT_DURATION_SEC="$duration" "$PY" tools/dummy_data_sender.py >/dev/null 2>&1 || true
+  echo "[bench] Starting ${CLIENTS} sender(s) for ${duration}s"
+  mkdir -p bench-results
+  local tag="${mode}-rep${replicas}-${duration}s"
+  pids=()
+  for i in $(seq 1 "$CLIENTS"); do
+    (EXPERIMENT_DURATION_SEC="$duration" SEND_REALTIME="0" WS_TRACE="0" "$PY" tools/dummy_data_sender.py) >"bench-results/sender-${tag}-c${i}.log" 2>&1 &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
 
   echo "[bench] Waiting for processor to flush ..."
   sleep 5
@@ -197,8 +211,7 @@ bench_one() {
     rows_per_sec="n/a"
   fi
 
-  mkdir -p bench-results
-  local tag="${mode}-rep${replicas}-${duration}s"
+  # tag already set above
   if $CAPTURE_STATS; then
     snapshot_stats "bench-results/docker-stats-${tag}.txt"
   fi
@@ -230,4 +243,3 @@ for m in "${run_modes[@]}"; do
 done
 
 echo "\n[bench] Done. See bench-results/ for summaries and docker-stats snapshots."
-

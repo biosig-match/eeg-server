@@ -28,6 +28,7 @@ ESP32_SENSOR_FORMAT = "<" + "H" * 8 + "f" * 3 + "f" * 3 + "B" + "b" * 8 + "I"
 # ★★★ 実験シミュレーション用の設定を追加 ★★★
 EXPERIMENT_DURATION_SEC = int(os.getenv("EXPERIMENT_DURATION_SEC", "20"))  # 実験全体の時間（秒）
 STIMULUS_INTERVAL_SEC = float(os.getenv("STIMULUS_INTERVAL_SEC", "2.0"))  # 刺激を提示する間隔（秒）
+SEND_REALTIME = os.getenv("SEND_REALTIME", "1") == "1"  # 1: 実時間、0: 可能な限り高速
 
 # --- グローバル変数 ---
 ws_connection_ready = threading.Event()
@@ -96,7 +97,8 @@ def send_eeg_data(ws, experiment_start_time):
             print(f"EEG送信中にエラーが発生しました: {e}")
             break
 
-        time.sleep(SAMPLES_PER_PACKET / SAMPLE_RATE)
+        if SEND_REALTIME:
+            time.sleep(SAMPLES_PER_PACKET / SAMPLE_RATE)
 
     print("EEG送信スレッドを停止しました。")
 
