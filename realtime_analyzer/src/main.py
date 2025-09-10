@@ -148,7 +148,9 @@ def rabbitmq_consumer():
             connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
             channel = connection.channel()
             # Processorが出力するトピックエクスチェンジを宣言
-            channel.exchange_declare(exchange="processed_data_exchange", exchange_type="topic")
+            channel.exchange_declare(
+                exchange="processed_data_exchange", exchange_type="topic", durable=True
+            )
 
             # このサービス専用の一時的なキューを作成
             result = channel.queue_declare(queue="", exclusive=True)
