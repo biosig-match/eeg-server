@@ -1,7 +1,0 @@
-mode:        baseline
-replicas:    1
-duration(s): 15
-eeg_rows:    71680
-imu_rows:    71680
-total_rows:  143360
-eeg_rows/s:  4778.7

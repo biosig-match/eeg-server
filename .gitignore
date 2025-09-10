@@ -22,3 +22,5 @@ bids_output/
 
 # OS
 .DS_Store
+.venv/
+bench-results/
