@@ -188,7 +188,7 @@ bench_one() {
 
   echo "[bench] Starting ${CLIENTS} sender(s) for ${duration}s"
   mkdir -p bench-results
-  local tag="${mode}-rep${replicas}-${duration}s"
+  local tag="${mode}-rep${replicas}-${duration}s-c${CLIENTS}"
   pids=()
   for i in $(seq 1 "$CLIENTS"); do
     (EXPERIMENT_DURATION_SEC="$duration" SEND_REALTIME="0" WS_TRACE="0" "$PY" tools/dummy_data_sender.py) >"bench-results/sender-${tag}-c${i}.log" 2>&1 &

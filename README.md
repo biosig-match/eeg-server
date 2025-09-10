@@ -361,16 +361,4 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 - **認証・認可:** 現状は認証機能がありません。本番運用では、API Gateway レベルで JWT 認証などを導入する必要があります。
 - **MUSE 2 対応:** `processor`サービスに、MUSE 2 など他デバイスからの非圧縮データを受信した際の処理分岐を追加します。
 
-## Processor 設定（パフォーマンス関連）
-
-Processor は以下の環境変数で処理パスを切り替えられます（デフォルトは高速化が有効）。
-
-- `PROCESSOR_USE_NUMPY` (0/1, default 1): NumPy の構造化 dtype + `np.frombuffer` によるベクトル化パースを有効にします。
-- `PROCESSOR_USE_COPY` (0/1, default 1): `psycopg` v3 の `COPY FROM STDIN BINARY` を使って一括投入します。
-- `PROCESSOR_COPY_BATCH` (int, default 10000): 将来のメッセージ集約時のパラメータ（現状はメッセージ単位で逐次 COPY）。
-
-動作要件:
-- `processor/requirements.txt` は `psycopg[binary]` と `numpy` を含みます。`psycopg2-binary` は不要になりました。
-
-注意:
-- ACK は DB コミット後に発行されます。例外発生時は `basic_nack(requeue=true)` で再処理されます。
+<!-- 以前は Processor の実装切替フラグ（NumPy/COPY）を提供していましたが、現在は常に最適化実装（NumPy ベクトル化 + psycopg3 COPY）で動作します。 -->

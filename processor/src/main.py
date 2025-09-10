@@ -12,9 +12,6 @@ import zstandard
 # --- 環境変数 ---
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgres://admin:password@db:5432/erp_data")
-USE_NUMPY = os.getenv("PROCESSOR_USE_NUMPY", "1") == "1"
-USE_COPY = os.getenv("PROCESSOR_USE_COPY", "1") == "1"
-COPY_BATCH_SIZE = int(os.getenv("PROCESSOR_COPY_BATCH", "10000"))
 
 # --- 定数 ---
 ESP32_SENSOR_FORMAT = "<" + "H" * 8 + "f" * 3 + "f" * 3 + "B" + "b" * 8 + "I"
@@ -71,58 +68,23 @@ def process_raw_eeg_message(channel, method, properties, body, db_conn):
             channel.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        # パース: NumPy か struct を選択
-        if USE_NUMPY:
-            arr = np.frombuffer(raw_bytes, dtype=ESP32_DTYPE, count=num_samples)
-            esp_u32 = arr["esp"]
-            latest_esp_micros = int(esp_u32[-1])
-            esp_boot_time_server = server_received_timestamp - timedelta(microseconds=latest_esp_micros)
-            DEVICE_BOOT_TIME_ESTIMATES[device_id] = esp_boot_time_server
+        # パース: 常に NumPy の構造化 dtype を使用
+        arr = np.frombuffer(raw_bytes, dtype=ESP32_DTYPE, count=num_samples)
+        esp_u32 = arr["esp"]
+        latest_esp_micros = int(esp_u32[-1])
+        esp_boot_time_server = server_received_timestamp - timedelta(microseconds=latest_esp_micros)
+        DEVICE_BOOT_TIME_ESTIMATES[device_id] = esp_boot_time_server
 
-            # タイムスタンプ系列（Python datetime の配列）
-            timestamps = [
-                esp_boot_time_server + timedelta(microseconds=int(us)) for us in esp_u32.tolist()
-            ]
+        # タイムスタンプ系列（Python datetime の配列）
+        timestamps = [
+            esp_boot_time_server + timedelta(microseconds=int(us)) for us in esp_u32.tolist()
+        ]
 
-            eeg_values_2d = arr["eeg"].tolist()  # (N, 8) → List[List[int]]
-            accel_2d = arr["accel"].astype(np.float64).tolist()  # float32→float64（Postgres DOUBLE PRECISION）
-            gyro_2d = arr["gyro"].astype(np.float64).tolist()
-            trig_1d = arr["trig"].tolist()
-            imp_2d = arr["imp"].tolist()
-        else:
-            latest_esp_micros = struct.unpack_from(
-                "<I", raw_bytes, (num_samples - 1) * ESP32_SENSOR_SIZE + (ESP32_SENSOR_SIZE - 4)
-            )[0]
-            esp_boot_time_server = server_received_timestamp - timedelta(
-                microseconds=latest_esp_micros
-            )
-            DEVICE_BOOT_TIME_ESTIMATES[device_id] = esp_boot_time_server
-
-            timestamps, eeg_values_2d, accel_2d, gyro_2d, trig_1d, imp_2d = (
-                [],
-                [],
-                [],
-                [],
-                [],
-                [],
-            )
-            for i in range(num_samples):
-                offset = i * ESP32_SENSOR_SIZE
-                unpacked = struct.unpack_from(ESP32_SENSOR_FORMAT, raw_bytes, offset)
-                eeg = list(unpacked[0:8])
-                accel = list(unpacked[8:11])
-                gyro = list(unpacked[11:14])
-                trig = unpacked[14]
-                imp = list(unpacked[15:23])
-                esp_us = unpacked[23]
-                ts = esp_boot_time_server + timedelta(microseconds=esp_us)
-
-                timestamps.append(ts)
-                eeg_values_2d.append(eeg)
-                accel_2d.append(accel)
-                gyro_2d.append(gyro)
-                trig_1d.append(trig)
-                imp_2d.append(imp)
+        eeg_values_2d = arr["eeg"].tolist()  # (N, 8) → List[List[int]]
+        accel_2d = arr["accel"].astype(np.float64).tolist()  # float32→float64（Postgres DOUBLE PRECISION）
+        gyro_2d = arr["gyro"].astype(np.float64).tolist()
+        trig_1d = arr["trig"].tolist()
+        imp_2d = arr["imp"].tolist()
 
         # レコード化（DB 書き込み用）
         eeg_rows = [
@@ -147,31 +109,19 @@ def process_raw_eeg_message(channel, method, properties, body, db_conn):
             for i in range(num_samples)
         ]
 
-        # DB 書き込み（psycopg3）。COPY が有効なら高速モード
-        if USE_COPY:
-            with db_conn.cursor() as cur:
-                with cur.copy(
-                    "COPY eeg_raw_data (timestamp, device_id, experiment_id, eeg_values, impedance_values, trigger_value) FROM STDIN BINARY"
-                ) as cp:
-                    for row in eeg_rows:
-                        cp.write_row(row)
-                with cur.copy(
-                    "COPY imu_raw_data (timestamp, device_id, experiment_id, accel_values, gyro_values) FROM STDIN BINARY"
-                ) as cp:
-                    for row in imu_rows:
-                        cp.write_row(row)
-            db_conn.commit()
-        else:
-            with db_conn.cursor() as cur:
-                cur.executemany(
-                    "INSERT INTO eeg_raw_data (timestamp, device_id, experiment_id, eeg_values, impedance_values, trigger_value) VALUES (%s, %s, %s, %s, %s, %s)",
-                    eeg_rows,
-                )
-                cur.executemany(
-                    "INSERT INTO imu_raw_data (timestamp, device_id, experiment_id, accel_values, gyro_values) VALUES (%s, %s, %s, %s, %s)",
-                    imu_rows,
-                )
-            db_conn.commit()
+        # DB 書き込み（psycopg3 COPY TEXT を常用）
+        with db_conn.cursor() as cur:
+            with cur.copy(
+                "COPY eeg_raw_data (timestamp, device_id, experiment_id, eeg_values, impedance_values, trigger_value) FROM STDIN WITH (FORMAT text)"
+            ) as cp:
+                for row in eeg_rows:
+                    cp.write_row(row)
+            with cur.copy(
+                "COPY imu_raw_data (timestamp, device_id, experiment_id, accel_values, gyro_values) FROM STDIN WITH (FORMAT text)"
+            ) as cp:
+                for row in imu_rows:
+                    cp.write_row(row)
+        db_conn.commit()
 
         processed_message = {"device_id": device_id, "eeg_data": [row[3] for row in eeg_rows]}
         channel.basic_publish(
@@ -185,6 +135,10 @@ def process_raw_eeg_message(channel, method, properties, body, db_conn):
 
     except Exception as e:
         print(f"EEGデータ処理中にエラーが発生しました: {e}")
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
         # 失敗時は requeue して再処理
         try:
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)

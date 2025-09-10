@@ -1,0 +1,7 @@
+mode:        optimized
+replicas:    1
+duration(s): 20
+eeg_rows:    0
+imu_rows:    0
+total_rows:  0
+eeg_rows/s:  0.0

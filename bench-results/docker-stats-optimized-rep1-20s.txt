@@ -1,0 +1,2 @@
+CONTAINER ID   NAME                     CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O     PIDS
+bf7cd73bc00c   eeg-server-processor-1   0.00%     34.38MiB / 62.71GiB   0.05%     3.34kB / 2.67kB   0B / 73.7kB   12

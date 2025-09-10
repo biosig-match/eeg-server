@@ -1,0 +1,7 @@
+mode:        optimized
+replicas:    1
+duration(s): 15
+eeg_rows:    96000
+imu_rows:    96000
+total_rows:  192000
+eeg_rows/s:  6400.0
