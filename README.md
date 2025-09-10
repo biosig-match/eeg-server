@@ -347,7 +347,7 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
    # 依存導入
    uv pip install -r tools/requirements.test.txt
    # 実行
-  .venv/bin/python tools/dummy_data_sender.py
+   .venv/bin/python tools/dummy_data_sender.py
    ```
 
    スクリプトが実験の開始から BIDS エクスポート要求までを自動で行い、ターミナルに進捗が表示されます。
@@ -360,5 +360,3 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 - **`onset`計算の厳密化:** 現在`bids_manager`は DB からトリガ信号のタイムスタンプを取得していますが、より高精度な ERP 解析のためには、サンプリング周波数を考慮してサンプル番号レベルでの`onset`計算を実装することが望ましいです。
 - **認証・認可:** 現状は認証機能がありません。本番運用では、API Gateway レベルで JWT 認証などを導入する必要があります。
 - **MUSE 2 対応:** `processor`サービスに、MUSE 2 など他デバイスからの非圧縮データを受信した際の処理分岐を追加します。
-
-<!-- 以前は Processor の実装切替フラグ（NumPy/COPY）を提供していましたが、現在は常に最適化実装（NumPy ベクトル化 + psycopg3 COPY）で動作します。 -->
