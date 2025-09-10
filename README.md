@@ -254,14 +254,29 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 3. Node/TypeScript ツール（collector ディレクトリ）
 
    - Node.js は LTS (>=18) を推奨
-   - 必要な開発依存を追加
+
+   - エディタ用モジュール解決（必須・実行は Docker に非依存）
+
+     VSCode が `import` を解決できるよう、`collector` にローカルの `node_modules` を用意します。
+     ランタイムは Docker 側で完結するため、これはエディタ専用の導入です（`.gitignore` 済み）。
 
      ```bash
      cd collector
-     npm i -D eslint @eslint/js typescript-eslint eslint-config-prettier prettier
+     npm install --no-package-lock
      ```
 
-   - 用意済みのスクリプト
+     補足: `.vscode/settings.json` で `typescript.tsdk` を `collector/node_modules/typescript/lib` に設定済みです。
+
+   - Lint/Format のための開発依存（CLI 実行や VSCode の ESLint 拡張で必要）
+
+     ESLint Flat Config（`eslint.config.mjs`）を利用します。必要なパッケージを追加してください。
+
+     ```bash
+     cd collector
+     npm i -D eslint @eslint/js typescript-eslint eslint-config-prettier prettier globals
+     ```
+
+   - 用意済みのスクリプト（collector 内）
 
      ```bash
      # 整形（Prettier）

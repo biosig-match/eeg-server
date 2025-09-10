@@ -35,4 +35,7 @@
   // Use a single editor-only interpreter so Pylance resolves imports.
   // On Windows, point to .venv\\Scripts\\python.exe instead.
   "python.defaultInterpreterPath": ".venv/bin/python"
+  ,
+  // Use workspace TypeScript SDK inside collector so VSCode resolves imports
+  "typescript.tsdk": "collector/node_modules/typescript/lib"
 }
