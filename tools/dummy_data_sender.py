@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 import random
 import struct
 import threading
@@ -11,21 +12,22 @@ import requests
 import websocket
 import zstandard
 
-websocket.enableTrace(True)
+# Allow enabling/disabling verbose WS trace via env
+websocket.enableTrace(os.getenv("WS_TRACE", "0") == "1")
 
 # --- 設定 ---
-API_BASE_URL = "http://localhost:8080/api/v1"
-WS_URL = "ws://localhost:8080/api/v1/eeg"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080/api/v1")
+WS_URL = os.getenv("WS_URL", "ws://localhost:8080/api/v1/eeg")
 
-ESP32_DEVICE_ID = "esp32-dev-01"
-PARTICIPANT_ID = "sub01"
-SAMPLE_RATE = 256
-SAMPLES_PER_PACKET = 128
+ESP32_DEVICE_ID = os.getenv("ESP32_DEVICE_ID", "esp32-dev-01")
+PARTICIPANT_ID = os.getenv("PARTICIPANT_ID", "sub01")
+SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "256"))
+SAMPLES_PER_PACKET = int(os.getenv("SAMPLES_PER_PACKET", "128"))
 ESP32_SENSOR_FORMAT = "<" + "H" * 8 + "f" * 3 + "f" * 3 + "B" + "b" * 8 + "I"
 
 # ★★★ 実験シミュレーション用の設定を追加 ★★★
-EXPERIMENT_DURATION_SEC = 20  # 実験全体の時間（秒）
-STIMULUS_INTERVAL_SEC = 2.0  # 刺激を提示する間隔（秒）
+EXPERIMENT_DURATION_SEC = int(os.getenv("EXPERIMENT_DURATION_SEC", "20"))  # 実験全体の時間（秒）
+STIMULUS_INTERVAL_SEC = float(os.getenv("STIMULUS_INTERVAL_SEC", "2.0"))  # 刺激を提示する間隔（秒）
 
 # --- グローバル変数 ---
 ws_connection_ready = threading.Event()

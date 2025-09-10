@@ -1,0 +1,6 @@
+services:
+  processor:
+    environment:
+      - PROCESSOR_USE_NUMPY=${PROCESSOR_USE_NUMPY:-1}
+      - PROCESSOR_USE_COPY=${PROCESSOR_USE_COPY:-1}
+      - PROCESSOR_COPY_BATCH=${PROCESSOR_COPY_BATCH:-10000}
