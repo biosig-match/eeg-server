@@ -73,8 +73,23 @@ async function createChannel() {
 }
 
 // --- WebSocketサーバー ---
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   console.log('[WebSocket] クライアントが接続しました。');
+  // クエリからメタデータを取得（WSバイナリ入力時に利用）
+  let wsMeta: { device_id?: string; experiment_id?: string | null; epoch_id?: number | null } = {};
+  try {
+    const url = new URL(req.url || '', 'http://localhost');
+    const device_id = url.searchParams.get('device_id') || undefined;
+    const experiment_id = url.searchParams.get('experiment_id');
+    const epoch_id = url.searchParams.get('epoch_id');
+    wsMeta = {
+      device_id,
+      experiment_id: experiment_id || null,
+      epoch_id: epoch_id ? parseInt(epoch_id, 10) : null,
+    };
+  } catch (_) {
+    // ignore parse errors
+  }
   ws.on('message', (message) => {
     const shouldPublishJson = COLLECTOR_MQ_FORMAT === 'json' || COLLECTOR_MQ_FORMAT === 'both';
     const shouldPublishBin = COLLECTOR_MQ_FORMAT === 'bin' || COLLECTOR_MQ_FORMAT === 'both';
@@ -153,9 +168,28 @@ wss.on('connection', (ws) => {
           }
         }
       } else {
-        // Binary WebSocket: requires metadata for headers; defer until WS v2 finalized
+        // Binary WebSocket v2: 受信したバイナリをそのまま publish（zstd圧縮済み想定）
         if (shouldPublishBin) {
-          console.warn('[Collector] バイナリWS入力はメタデータ不足のため未対応（TODO: v2 WS）');
+          const buf = toBuffer();
+          const headers: Record<string, any> = {
+            device_id: wsMeta.device_id ?? 'unknown',
+            experiment_id: wsMeta.experiment_id ?? null,
+            epoch_id: wsMeta.epoch_id ?? null,
+            server_received_timestamp: new Date().toISOString(),
+            schema_version: 'v2-bin',
+          };
+          amqpChannel.publish(
+            RAW_DATA_EXCHANGE,
+            'eeg.raw.bin',
+            buf,
+            {
+              persistent: true,
+              contentType: 'application/octet-stream',
+              contentEncoding: 'zstd',
+              timestamp: Math.floor(Date.now() / 1000),
+              headers,
+            },
+          );
         }
       }
     } catch (e: any) {
