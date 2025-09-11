@@ -72,24 +72,108 @@ async function createChannel() {
 }
 
 // --- WebSocketサーバー ---
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   console.log('[WebSocket] クライアントが接続しました。');
+  // クエリからメタデータを取得（WSバイナリ入力時に利用）
+  let wsMeta: { device_id?: string; experiment_id?: string | null; epoch_id?: number | null } = {};
+  try {
+    const url = new URL(req.url || '', 'http://localhost');
+    const device_id = url.searchParams.get('device_id') || undefined;
+    const experiment_id = url.searchParams.get('experiment_id');
+    const epoch_id = url.searchParams.get('epoch_id');
+    wsMeta = {
+      device_id,
+      experiment_id: experiment_id || null,
+      epoch_id: epoch_id ? parseInt(epoch_id, 10) : null,
+    };
+  } catch (_) {
+    // ignore parse errors
+  }
   ws.on('message', (message) => {
-    // ★★★ Nullチェックを確実に行います ★★★
-    if (amqpChannel) {
+    if (!amqpChannel) {
+      console.warn('[WebSocket] メッセージを破棄しました: RabbitMQチャネルが利用できません。');
+      return;
+    }
+
+    // RawData: Buffer | ArrayBuffer | string | Buffer[]
+    const isBuffer = Buffer.isBuffer(message);
+    const isArrayBuffer = (message as any) instanceof ArrayBuffer;
+    const toBuffer = (): Buffer => {
+      if (isBuffer) return message as Buffer;
+      if (isArrayBuffer) return Buffer.from(message as ArrayBuffer);
+      if (Array.isArray(message)) return Buffer.concat(message as Buffer[]);
+      return Buffer.from(String(message));
+    };
+
+    // Heuristic: treat as JSON if it looks like JSON text
+    const asString = (() => {
       try {
-        const parsedMessage = JSON.parse(message.toString());
+        if (typeof message === 'string') return message as string;
+        if (isBuffer) return (message as Buffer).toString('utf8');
+        if (isArrayBuffer) return Buffer.from(message as ArrayBuffer).toString('utf8');
+        if (Array.isArray(message)) return Buffer.concat(message as Buffer[]).toString('utf8');
+      } catch (_) {
+        /* noop */
+      }
+      return '';
+    })();
+
+    const looksLikeJson = asString.trim().startsWith('{') && asString.trim().endsWith('}');
+
+    try {
+      if (looksLikeJson) {
+        const parsed = JSON.parse(asString);
+        const base64Payload: string | undefined = parsed?.payload;
+        if (typeof base64Payload === 'string' && base64Payload.length > 0) {
+          const compressed = Buffer.from(base64Payload, 'base64');
+          const headers: Record<string, any> = {
+            device_id: parsed?.device_id ?? 'unknown',
+            experiment_id: parsed?.experiment_id ?? null,
+            epoch_id: parsed?.epoch_id ?? null,
+            server_received_timestamp:
+              parsed?.server_received_timestamp ?? new Date().toISOString(),
+            schema_version: 'v2-bin',
+          };
+          amqpChannel.publish(
+            RAW_DATA_EXCHANGE,
+            'eeg.raw',
+            compressed,
+            {
+              persistent: true,
+              contentType: 'application/octet-stream',
+              contentEncoding: 'zstd',
+              timestamp: Math.floor(Date.now() / 1000),
+              headers,
+            },
+          );
+        } else {
+          console.warn('[Collector] JSONにpayloadがありません。スキップしました。');
+        }
+      } else {
+        // Binary WebSocket v2: 受信したバイナリをそのまま publish（zstd圧縮済み想定）
+        const buf = toBuffer();
+        const headers: Record<string, any> = {
+          device_id: wsMeta.device_id ?? 'unknown',
+          experiment_id: wsMeta.experiment_id ?? null,
+          epoch_id: wsMeta.epoch_id ?? null,
+          server_received_timestamp: new Date().toISOString(),
+          schema_version: 'v2-bin',
+        };
         amqpChannel.publish(
           RAW_DATA_EXCHANGE,
           'eeg.raw',
-          Buffer.from(JSON.stringify(parsedMessage)),
-          { persistent: true },
+          buf,
+          {
+            persistent: true,
+            contentType: 'application/octet-stream',
+            contentEncoding: 'zstd',
+            timestamp: Math.floor(Date.now() / 1000),
+            headers,
+          },
         );
-      } catch (e) {
-        console.error('[WebSocket] 受信メッセージの解析に失敗:', e);
       }
-    } else {
-      console.warn('[WebSocket] メッセージを破棄しました: RabbitMQチャネルが利用できません。');
+    } catch (e: any) {
+      console.error('[WebSocket] 受信メッセージ処理に失敗:', e?.message || e);
     }
   });
   ws.on('close', () => console.log('[WebSocket] クライアントが切断されました。'));

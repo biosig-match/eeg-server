@@ -38,6 +38,18 @@ def get_db_connection():
     return psycopg.connect(DATABASE_URL)
 
 
+def parse_iso_dt(value: str) -> datetime:
+    """ISO8601を厳密すぎない形でdatetimeへ変換（'Z'も許容）。"""
+    if not isinstance(value, str):
+        return datetime.now()
+    v = value.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(v)
+    except Exception:
+        return datetime.now()
+
 # --- 現在進行中の実験IDを取得するヘルパー関数 ---
 def get_active_experiment_id(db_conn, device_id):
     """指定されたデバイスIDで現在進行中（end_timeがNULL）の実験IDを返す"""
@@ -50,43 +62,48 @@ def get_active_experiment_id(db_conn, device_id):
         return result[0] if result else None
 
 
-def process_raw_eeg_message(channel, method, properties, body, db_conn):
-    """EEG/IMU生データパケットを処理するコールバック関数"""
+
+
+def process_raw_eeg_message_v2(channel, method, properties, body, db_conn):
+    """EEG/IMU生データ（v2: application/octet-stream + zstd, headersにメタ）を処理。"""
     try:
-        message = json.loads(body)
-        device_id = message["device_id"]
-        server_received_timestamp = datetime.fromisoformat(message["server_received_timestamp"])
+        headers = getattr(properties, "headers", {}) or {}
+        device_id = headers.get("device_id", "unknown")
+        # タイムスタンプ: ヘッダ優先、なければ AMQP timestamp、さらになければ現在時刻
+        ts_str = headers.get("server_received_timestamp")
+        if ts_str:
+            server_received_timestamp = parse_iso_dt(ts_str)
+        elif getattr(properties, "timestamp", None):
+            server_received_timestamp = datetime.fromtimestamp(properties.timestamp)
+        else:
+            server_received_timestamp = datetime.now()
 
         # 現在進行中の実験IDを取得
         active_experiment_id = get_active_experiment_id(db_conn, device_id)
 
-        compressed_data = base64.b64decode(message["payload"])
-        raw_bytes = zstandard.ZstdDecompressor().decompress(compressed_data)
+        raw_bytes = zstandard.ZstdDecompressor().decompress(body)
 
         num_samples = len(raw_bytes) // ESP32_SENSOR_SIZE
         if num_samples == 0:
             channel.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        # パース: 常に NumPy の構造化 dtype を使用
         arr = np.frombuffer(raw_bytes, dtype=ESP32_DTYPE, count=num_samples)
         esp_u32 = arr["esp"]
         latest_esp_micros = int(esp_u32[-1])
         esp_boot_time_server = server_received_timestamp - timedelta(microseconds=latest_esp_micros)
         DEVICE_BOOT_TIME_ESTIMATES[device_id] = esp_boot_time_server
 
-        # タイムスタンプ系列（Python datetime の配列）
         timestamps = [
             esp_boot_time_server + timedelta(microseconds=int(us)) for us in esp_u32.tolist()
         ]
 
-        eeg_values_2d = arr["eeg"].tolist()  # (N, 8) → List[List[int]]
-        accel_2d = arr["accel"].astype(np.float64).tolist()  # float32→float64（Postgres DOUBLE PRECISION）
+        eeg_values_2d = arr["eeg"].tolist()
+        accel_2d = arr["accel"].astype(np.float64).tolist()
         gyro_2d = arr["gyro"].astype(np.float64).tolist()
         trig_1d = arr["trig"].tolist()
         imp_2d = arr["imp"].tolist()
 
-        # レコード化（DB 書き込み用）
         eeg_rows = [
             (
                 timestamps[i],
@@ -109,7 +126,6 @@ def process_raw_eeg_message(channel, method, properties, body, db_conn):
             for i in range(num_samples)
         ]
 
-        # DB 書き込み（psycopg3 COPY TEXT を常用）
         with db_conn.cursor() as cur:
             with cur.copy(
                 "COPY eeg_raw_data (timestamp, device_id, experiment_id, eeg_values, impedance_values, trigger_value) FROM STDIN WITH (FORMAT text)"
@@ -130,20 +146,17 @@ def process_raw_eeg_message(channel, method, properties, body, db_conn):
             body=json.dumps(processed_message),
         )
 
-        # 成功したので ACK
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
     except Exception as e:
-        print(f"EEGデータ処理中にエラーが発生しました: {e}")
+        print(f"EEG(v2)データ処理中にエラーが発生しました: {e}")
         try:
             db_conn.rollback()
         except Exception:
             pass
-        # 失敗時は requeue して再処理
         try:
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         except Exception:
-            # チャンネル状態によっては nack できない可能性があるためログのみ
             pass
 
 
@@ -200,7 +213,7 @@ def main():
     def callback(ch, method, properties, body):
         routing_key = method.routing_key
         if routing_key == "eeg.raw":
-            process_raw_eeg_message(ch, method, properties, body, db_conn)
+            process_raw_eeg_message_v2(ch, method, properties, body, db_conn)
         elif routing_key == "media.raw":
             process_media_message(ch, method, properties, body, db_conn)
         else:
