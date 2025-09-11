@@ -38,10 +38,12 @@ done
 # Run dummy sender inside an ephemeral container on the compose network
 echo "[quick-v2-test] Sending short EEG stream via dummy_data_sender.py (ephemeral container)..."
 export EXPERIMENT_DURATION_SEC=8
-export SEND_REALTIME=0
+# 実時間送信にしてトリガ検知の安定性を上げる
+export SEND_REALTIME=1
 # Use internal ingress address from within the network
 export API_BASE_URL=http://ingress/api/v1
 export WS_URL=ws://ingress/api/v1/eeg
+sleep 2
 docker compose run --rm \
   -e API_BASE_URL -e WS_URL -e EXPERIMENT_DURATION_SEC -e SEND_REALTIME \
   -v "$ROOT_DIR":/work -w /work \
