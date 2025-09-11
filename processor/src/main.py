@@ -12,6 +12,7 @@ import zstandard
 # --- 環境変数 ---
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgres://admin:password@db:5432/erp_data")
+PROCESSOR_MQ_FORMAT = os.getenv("PROCESSOR_MQ_FORMAT", "v1").lower()
 
 # --- 定数 ---
 ESP32_SENSOR_FORMAT = "<" + "H" * 8 + "f" * 3 + "f" * 3 + "B" + "b" * 8 + "I"
@@ -147,6 +148,102 @@ def process_raw_eeg_message(channel, method, properties, body, db_conn):
             pass
 
 
+def process_raw_eeg_message_v2(channel, method, properties, body, db_conn):
+    """EEG/IMU生データ（v2: application/octet-stream + zstd, headersにメタ）を処理。"""
+    try:
+        headers = getattr(properties, "headers", {}) or {}
+        device_id = headers.get("device_id", "unknown")
+        # タイムスタンプ: ヘッダ優先、なければ AMQP timestamp、さらになければ現在時刻
+        ts_str = headers.get("server_received_timestamp")
+        if ts_str:
+            server_received_timestamp = datetime.fromisoformat(ts_str)
+        elif getattr(properties, "timestamp", None):
+            server_received_timestamp = datetime.fromtimestamp(properties.timestamp)
+        else:
+            server_received_timestamp = datetime.now()
+
+        # 現在進行中の実験IDを取得
+        active_experiment_id = get_active_experiment_id(db_conn, device_id)
+
+        raw_bytes = zstandard.ZstdDecompressor().decompress(body)
+
+        num_samples = len(raw_bytes) // ESP32_SENSOR_SIZE
+        if num_samples == 0:
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+            return
+
+        arr = np.frombuffer(raw_bytes, dtype=ESP32_DTYPE, count=num_samples)
+        esp_u32 = arr["esp"]
+        latest_esp_micros = int(esp_u32[-1])
+        esp_boot_time_server = server_received_timestamp - timedelta(microseconds=latest_esp_micros)
+        DEVICE_BOOT_TIME_ESTIMATES[device_id] = esp_boot_time_server
+
+        timestamps = [
+            esp_boot_time_server + timedelta(microseconds=int(us)) for us in esp_u32.tolist()
+        ]
+
+        eeg_values_2d = arr["eeg"].tolist()
+        accel_2d = arr["accel"].astype(np.float64).tolist()
+        gyro_2d = arr["gyro"].astype(np.float64).tolist()
+        trig_1d = arr["trig"].tolist()
+        imp_2d = arr["imp"].tolist()
+
+        eeg_rows = [
+            (
+                timestamps[i],
+                device_id,
+                active_experiment_id,
+                eeg_values_2d[i],
+                imp_2d[i],
+                int(trig_1d[i]),
+            )
+            for i in range(num_samples)
+        ]
+        imu_rows = [
+            (
+                timestamps[i],
+                device_id,
+                active_experiment_id,
+                accel_2d[i],
+                gyro_2d[i],
+            )
+            for i in range(num_samples)
+        ]
+
+        with db_conn.cursor() as cur:
+            with cur.copy(
+                "COPY eeg_raw_data (timestamp, device_id, experiment_id, eeg_values, impedance_values, trigger_value) FROM STDIN WITH (FORMAT text)"
+            ) as cp:
+                for row in eeg_rows:
+                    cp.write_row(row)
+            with cur.copy(
+                "COPY imu_raw_data (timestamp, device_id, experiment_id, accel_values, gyro_values) FROM STDIN WITH (FORMAT text)"
+            ) as cp:
+                for row in imu_rows:
+                    cp.write_row(row)
+        db_conn.commit()
+
+        processed_message = {"device_id": device_id, "eeg_data": [row[3] for row in eeg_rows]}
+        channel.basic_publish(
+            exchange="processed_data_exchange",
+            routing_key="eeg.processed",
+            body=json.dumps(processed_message),
+        )
+
+        channel.basic_ack(delivery_tag=method.delivery_tag)
+
+    except Exception as e:
+        print(f"EEG(v2)データ処理中にエラーが発生しました: {e}")
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
+        try:
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        except Exception:
+            pass
+
+
 def process_media_message(channel, method, properties, body, db_conn):
     """メディアファイル（画像・音声）を処理するコールバック関数"""
     try:
@@ -199,8 +296,10 @@ def main():
 
     def callback(ch, method, properties, body):
         routing_key = method.routing_key
-        if routing_key == "eeg.raw":
+        if routing_key == "eeg.raw" and PROCESSOR_MQ_FORMAT in ("v1", "both"):
             process_raw_eeg_message(ch, method, properties, body, db_conn)
+        elif routing_key == "eeg.raw.bin" and PROCESSOR_MQ_FORMAT in ("v2", "both"):
+            process_raw_eeg_message_v2(ch, method, properties, body, db_conn)
         elif routing_key == "media.raw":
             process_media_message(ch, method, properties, body, db_conn)
         else:

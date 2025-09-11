@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@rabbitmq';
 const PORT = process.env.PORT || 3000;
 const RAW_DATA_EXCHANGE = 'raw_data_exchange';
+const COLLECTOR_MQ_FORMAT = (process.env.COLLECTOR_MQ_FORMAT || 'json').toLowerCase();
 
 // --- Expressアプリケーションのセットアップ ---
 const app = express();
@@ -75,21 +76,90 @@ async function createChannel() {
 wss.on('connection', (ws) => {
   console.log('[WebSocket] クライアントが接続しました。');
   ws.on('message', (message) => {
-    // ★★★ Nullチェックを確実に行います ★★★
-    if (amqpChannel) {
-      try {
-        const parsedMessage = JSON.parse(message.toString());
-        amqpChannel.publish(
-          RAW_DATA_EXCHANGE,
-          'eeg.raw',
-          Buffer.from(JSON.stringify(parsedMessage)),
-          { persistent: true },
-        );
-      } catch (e) {
-        console.error('[WebSocket] 受信メッセージの解析に失敗:', e);
-      }
-    } else {
+    const shouldPublishJson = COLLECTOR_MQ_FORMAT === 'json' || COLLECTOR_MQ_FORMAT === 'both';
+    const shouldPublishBin = COLLECTOR_MQ_FORMAT === 'bin' || COLLECTOR_MQ_FORMAT === 'both';
+
+    if (!amqpChannel) {
       console.warn('[WebSocket] メッセージを破棄しました: RabbitMQチャネルが利用できません。');
+      return;
+    }
+
+    // RawData: Buffer | ArrayBuffer | string | Buffer[]
+    const isBuffer = Buffer.isBuffer(message);
+    const isArrayBuffer = (message as any) instanceof ArrayBuffer;
+    const toBuffer = (): Buffer => {
+      if (isBuffer) return message as Buffer;
+      if (isArrayBuffer) return Buffer.from(message as ArrayBuffer);
+      if (Array.isArray(message)) return Buffer.concat(message as Buffer[]);
+      return Buffer.from(String(message));
+    };
+
+    // Heuristic: treat as JSON if it looks like JSON text
+    const asString = (() => {
+      try {
+        if (typeof message === 'string') return message as string;
+        if (isBuffer) return (message as Buffer).toString('utf8');
+        if (isArrayBuffer) return Buffer.from(message as ArrayBuffer).toString('utf8');
+        if (Array.isArray(message)) return Buffer.concat(message as Buffer[]).toString('utf8');
+      } catch (_) {
+        /* noop */
+      }
+      return '';
+    })();
+
+    const looksLikeJson = asString.trim().startsWith('{') && asString.trim().endsWith('}');
+
+    try {
+      if (looksLikeJson) {
+        const parsed = JSON.parse(asString);
+
+        // Always allow legacy JSON publish if enabled
+        if (shouldPublishJson) {
+          amqpChannel.publish(
+            RAW_DATA_EXCHANGE,
+            'eeg.raw',
+            Buffer.from(JSON.stringify(parsed)),
+            { persistent: true },
+          );
+        }
+
+        // If binary route enabled and payload present, publish v2 message
+        if (shouldPublishBin) {
+          const base64Payload: string | undefined = parsed?.payload;
+          if (typeof base64Payload === 'string' && base64Payload.length > 0) {
+            const compressed = Buffer.from(base64Payload, 'base64');
+            const headers: Record<string, any> = {
+              device_id: parsed?.device_id ?? 'unknown',
+              experiment_id: parsed?.experiment_id ?? null,
+              epoch_id: parsed?.epoch_id ?? null,
+              server_received_timestamp:
+                parsed?.server_received_timestamp ?? new Date().toISOString(),
+              schema_version: 'v2-bin',
+            };
+            amqpChannel.publish(
+              RAW_DATA_EXCHANGE,
+              'eeg.raw.bin',
+              compressed,
+              {
+                persistent: true,
+                contentType: 'application/octet-stream',
+                contentEncoding: 'zstd',
+                timestamp: Math.floor(Date.now() / 1000),
+                headers,
+              },
+            );
+          } else if (!shouldPublishJson) {
+            console.warn('[Collector] BIN出力が有効ですが、JSONにpayloadがありません。スキップしました。');
+          }
+        }
+      } else {
+        // Binary WebSocket: requires metadata for headers; defer until WS v2 finalized
+        if (shouldPublishBin) {
+          console.warn('[Collector] バイナリWS入力はメタデータ不足のため未対応（TODO: v2 WS）');
+        }
+      }
+    } catch (e: any) {
+      console.error('[WebSocket] 受信メッセージ処理に失敗:', e?.message || e);
     }
   });
   ws.on('close', () => console.log('[WebSocket] クライアントが切断されました。'));
