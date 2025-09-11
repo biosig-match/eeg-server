@@ -39,6 +39,18 @@ def get_db_connection():
     return psycopg.connect(DATABASE_URL)
 
 
+def parse_iso_dt(value: str) -> datetime:
+    """ISO8601を厳密すぎない形でdatetimeへ変換（'Z'も許容）。"""
+    if not isinstance(value, str):
+        return datetime.now()
+    v = value.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(v)
+    except Exception:
+        return datetime.now()
+
 # --- 現在進行中の実験IDを取得するヘルパー関数 ---
 def get_active_experiment_id(db_conn, device_id):
     """指定されたデバイスIDで現在進行中（end_timeがNULL）の実験IDを返す"""
@@ -56,7 +68,7 @@ def process_raw_eeg_message(channel, method, properties, body, db_conn):
     try:
         message = json.loads(body)
         device_id = message["device_id"]
-        server_received_timestamp = datetime.fromisoformat(message["server_received_timestamp"])
+        server_received_timestamp = parse_iso_dt(message["server_received_timestamp"])
 
         # 現在進行中の実験IDを取得
         active_experiment_id = get_active_experiment_id(db_conn, device_id)
@@ -156,7 +168,7 @@ def process_raw_eeg_message_v2(channel, method, properties, body, db_conn):
         # タイムスタンプ: ヘッダ優先、なければ AMQP timestamp、さらになければ現在時刻
         ts_str = headers.get("server_received_timestamp")
         if ts_str:
-            server_received_timestamp = datetime.fromisoformat(ts_str)
+            server_received_timestamp = parse_iso_dt(ts_str)
         elif getattr(properties, "timestamp", None):
             server_received_timestamp = datetime.fromtimestamp(properties.timestamp)
         else:
