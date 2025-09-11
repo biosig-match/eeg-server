@@ -1,6 +1,5 @@
 # Python editor venv (do not commit)
 .venv/
-.venv_quick_test/
 
 # Python caches
 **/__pycache__/
