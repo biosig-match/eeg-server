@@ -10,7 +10,6 @@ import { WebSocketServer } from 'ws';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@rabbitmq';
 const PORT = process.env.PORT || 3000;
 const RAW_DATA_EXCHANGE = 'raw_data_exchange';
-const COLLECTOR_MQ_FORMAT = (process.env.COLLECTOR_MQ_FORMAT || 'json').toLowerCase();
 
 // --- Expressアプリケーションのセットアップ ---
 const app = express();
@@ -91,9 +90,6 @@ wss.on('connection', (ws, req) => {
     // ignore parse errors
   }
   ws.on('message', (message) => {
-    const shouldPublishJson = COLLECTOR_MQ_FORMAT === 'json' || COLLECTOR_MQ_FORMAT === 'both';
-    const shouldPublishBin = COLLECTOR_MQ_FORMAT === 'bin' || COLLECTOR_MQ_FORMAT === 'both';
-
     if (!amqpChannel) {
       console.warn('[WebSocket] メッセージを破棄しました: RabbitMQチャネルが利用できません。');
       return;
@@ -127,61 +123,21 @@ wss.on('connection', (ws, req) => {
     try {
       if (looksLikeJson) {
         const parsed = JSON.parse(asString);
-
-        // Always allow legacy JSON publish if enabled
-        if (shouldPublishJson) {
-          amqpChannel.publish(
-            RAW_DATA_EXCHANGE,
-            'eeg.raw',
-            Buffer.from(JSON.stringify(parsed)),
-            { persistent: true },
-          );
-        }
-
-        // If binary route enabled and payload present, publish v2 message
-        if (shouldPublishBin) {
-          const base64Payload: string | undefined = parsed?.payload;
-          if (typeof base64Payload === 'string' && base64Payload.length > 0) {
-            const compressed = Buffer.from(base64Payload, 'base64');
-            const headers: Record<string, any> = {
-              device_id: parsed?.device_id ?? 'unknown',
-              experiment_id: parsed?.experiment_id ?? null,
-              epoch_id: parsed?.epoch_id ?? null,
-              server_received_timestamp:
-                parsed?.server_received_timestamp ?? new Date().toISOString(),
-              schema_version: 'v2-bin',
-            };
-            amqpChannel.publish(
-              RAW_DATA_EXCHANGE,
-              'eeg.raw',
-              compressed,
-              {
-                persistent: true,
-                contentType: 'application/octet-stream',
-                contentEncoding: 'zstd',
-                timestamp: Math.floor(Date.now() / 1000),
-                headers,
-              },
-            );
-          } else if (!shouldPublishJson) {
-            console.warn('[Collector] BIN出力が有効ですが、JSONにpayloadがありません。スキップしました。');
-          }
-        }
-      } else {
-        // Binary WebSocket v2: 受信したバイナリをそのまま publish（zstd圧縮済み想定）
-        if (shouldPublishBin) {
-          const buf = toBuffer();
+        const base64Payload: string | undefined = parsed?.payload;
+        if (typeof base64Payload === 'string' && base64Payload.length > 0) {
+          const compressed = Buffer.from(base64Payload, 'base64');
           const headers: Record<string, any> = {
-            device_id: wsMeta.device_id ?? 'unknown',
-            experiment_id: wsMeta.experiment_id ?? null,
-            epoch_id: wsMeta.epoch_id ?? null,
-            server_received_timestamp: new Date().toISOString(),
+            device_id: parsed?.device_id ?? 'unknown',
+            experiment_id: parsed?.experiment_id ?? null,
+            epoch_id: parsed?.epoch_id ?? null,
+            server_received_timestamp:
+              parsed?.server_received_timestamp ?? new Date().toISOString(),
             schema_version: 'v2-bin',
           };
           amqpChannel.publish(
             RAW_DATA_EXCHANGE,
             'eeg.raw',
-            buf,
+            compressed,
             {
               persistent: true,
               contentType: 'application/octet-stream',
@@ -190,7 +146,31 @@ wss.on('connection', (ws, req) => {
               headers,
             },
           );
+        } else {
+          console.warn('[Collector] JSONにpayloadがありません。スキップしました。');
         }
+      } else {
+        // Binary WebSocket v2: 受信したバイナリをそのまま publish（zstd圧縮済み想定）
+        const buf = toBuffer();
+        const headers: Record<string, any> = {
+          device_id: wsMeta.device_id ?? 'unknown',
+          experiment_id: wsMeta.experiment_id ?? null,
+          epoch_id: wsMeta.epoch_id ?? null,
+          server_received_timestamp: new Date().toISOString(),
+          schema_version: 'v2-bin',
+        };
+        amqpChannel.publish(
+          RAW_DATA_EXCHANGE,
+          'eeg.raw',
+          buf,
+          {
+            persistent: true,
+            contentType: 'application/octet-stream',
+            contentEncoding: 'zstd',
+            timestamp: Math.floor(Date.now() / 1000),
+            headers,
+          },
+        );
       }
     } catch (e: any) {
       console.error('[WebSocket] 受信メッセージ処理に失敗:', e?.message || e);

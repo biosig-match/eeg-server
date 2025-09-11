@@ -9,9 +9,6 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-export COLLECTOR_MQ_FORMAT=bin
-export PROCESSOR_MQ_FORMAT=v2
-
 echo "[quick-v2-test] Starting stack (v2 only)..."
 docker compose up -d --build
 
@@ -75,4 +72,3 @@ else
 fi
 
 echo "[quick-v2-test] Done. Stack will be cleaned up now."
-
