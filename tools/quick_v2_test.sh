@@ -35,23 +35,17 @@ for svc in erp_rabbitmq erp_db; do
   done
 done
 
-# Prepare Python env on the fly (optional but convenient)
-VENV_DIR="$ROOT_DIR/.venv_quick_test"
-if command -v python3 >/dev/null 2>&1; then
-  echo "[quick-v2-test] Preparing Python venv..."
-  python3 -m venv "$VENV_DIR" || true
-  source "$VENV_DIR/bin/activate" || true
-  pip -q install --upgrade pip >/dev/null 2>&1 || true
-  if [[ -f tools/requirements.test.txt ]]; then
-    pip -q install -r tools/requirements.test.txt >/dev/null 2>&1 || true
-  fi
-fi
-
-echo "[quick-v2-test] Sending short EEG stream via dummy_data_sender.py..."
+# Run dummy sender inside an ephemeral container on the compose network
+echo "[quick-v2-test] Sending short EEG stream via dummy_data_sender.py (ephemeral container)..."
 export EXPERIMENT_DURATION_SEC=8
 export SEND_REALTIME=0
-python3 tools/dummy_data_sender.py || {
-  echo "[quick-v2-test] WARN: dummy sender failed (dependencies missing?). Proceeding to DB check if possible." >&2
+# Use internal ingress address from within the network
+export API_BASE_URL=http://ingress/api/v1
+export WS_URL=ws://ingress/api/v1/eeg
+docker compose run --rm \
+  -e API_BASE_URL -e WS_URL -e EXPERIMENT_DURATION_SEC -e SEND_REALTIME \
+  bids_manager sh -lc "pip -q install -r tools/requirements.test.txt >/dev/null 2>&1 && python3 tools/dummy_data_sender.py" || {
+  echo "[quick-v2-test] WARN: dummy sender failed. Proceeding to DB check if possible." >&2
 }
 
 # Load DB env
@@ -62,12 +56,14 @@ PGDB=${POSTGRES_DB:-erp_data}
 echo "[quick-v2-test] Checking DB rows..."
 COUNT=$(docker exec -e PGPASSWORD=${POSTGRES_PASSWORD:-password} erp_db \
   psql -U "$PGUSER" -d "$PGDB" -t -c "SELECT COUNT(*) FROM eeg_raw_data;" | tr -d '[:space:]') || COUNT=0
+TRIG=$(docker exec -e PGPASSWORD=${POSTGRES_PASSWORD:-password} erp_db \
+  psql -U "$PGUSER" -d "$PGDB" -t -c "SELECT COUNT(*) FROM eeg_raw_data WHERE trigger_value = 1;" | tr -d '[:space:]') || TRIG=0
 
-echo "[quick-v2-test] eeg_raw_data count = ${COUNT:-0}"
-if [[ "${COUNT:-0}" -gt 0 ]]; then
+echo "[quick-v2-test] eeg_raw_data count = ${COUNT:-0} (triggers=${TRIG:-0})"
+if [[ "${COUNT:-0}" -gt 0 && "${TRIG:-0}" -gt 0 ]]; then
   echo "[quick-v2-test] OK: v2 path inserted rows into DB."
 else
-  echo "[quick-v2-test] FAIL: No rows detected in DB." >&2
+  echo "[quick-v2-test] FAIL: Missing rows or triggers in DB." >&2
   exit 2
 fi
 
