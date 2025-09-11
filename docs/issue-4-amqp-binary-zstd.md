@@ -28,7 +28,7 @@
 
 ## ロールアウト結果
 - 段階移行を経て、v2（`eeg.raw` バイナリ）に統一済み。
-- 検証は `tools/quick_v2_test.sh` で実施。起動→送信→DB確認→BIDS エクスポート→完全撤収まで自動化。
+- 検証は Compose + `tools/dummy_data_sender.py` により手動E2Eで実施（起動→送信→DB確認→BIDSエクスポート→撤収）。
 
 ## TODO
 - [ ] README 図と説明の v2 前提化（必要に応じて）
