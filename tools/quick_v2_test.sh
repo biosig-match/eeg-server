@@ -44,7 +44,8 @@ export API_BASE_URL=http://ingress/api/v1
 export WS_URL=ws://ingress/api/v1/eeg
 docker compose run --rm \
   -e API_BASE_URL -e WS_URL -e EXPERIMENT_DURATION_SEC -e SEND_REALTIME \
-  bids_manager sh -lc "pip -q install -r tools/requirements.test.txt >/dev/null 2>&1 && python3 tools/dummy_data_sender.py" || {
+  -v "$ROOT_DIR":/work -w /work \
+  bids_manager sh -lc "pip -q install requests websocket-client zstandard >/dev/null 2>&1 && python3 tools/dummy_data_sender.py" || {
   echo "[quick-v2-test] WARN: dummy sender failed. Proceeding to DB check if possible." >&2
 }
 
