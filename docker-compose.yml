@@ -41,6 +41,7 @@ services:
         condition: service_healthy
     environment:
       - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      - COLLECTOR_MQ_FORMAT=${COLLECTOR_MQ_FORMAT}
 
   processor:
     build: ./processor
@@ -54,6 +55,7 @@ services:
     environment:
       - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      - PROCESSOR_MQ_FORMAT=${PROCESSOR_MQ_FORMAT}
     deploy:
       replicas: 2 # 複数起動するため、コンテナ名はDockerに自動採番させる
 
