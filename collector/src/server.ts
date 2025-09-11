@@ -153,7 +153,7 @@ wss.on('connection', (ws, req) => {
             };
             amqpChannel.publish(
               RAW_DATA_EXCHANGE,
-              'eeg.raw.bin',
+              'eeg.raw',
               compressed,
               {
                 persistent: true,
@@ -180,7 +180,7 @@ wss.on('connection', (ws, req) => {
           };
           amqpChannel.publish(
             RAW_DATA_EXCHANGE,
-            'eeg.raw.bin',
+            'eeg.raw',
             buf,
             {
               persistent: true,

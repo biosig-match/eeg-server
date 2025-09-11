@@ -308,10 +308,25 @@ def main():
 
     def callback(ch, method, properties, body):
         routing_key = method.routing_key
-        if routing_key == "eeg.raw" and PROCESSOR_MQ_FORMAT in ("v1", "both"):
-            process_raw_eeg_message(ch, method, properties, body, db_conn)
-        elif routing_key == "eeg.raw.bin" and PROCESSOR_MQ_FORMAT in ("v2", "both"):
-            process_raw_eeg_message_v2(ch, method, properties, body, db_conn)
+        if routing_key == "eeg.raw":
+            # v2判別: content_type/encoding または headers.schema_version
+            headers = getattr(properties, "headers", {}) or {}
+            ctype = getattr(properties, "content_type", None) or getattr(properties, "contentType", None)
+            cenc = getattr(properties, "content_encoding", None) or getattr(properties, "contentEncoding", None)
+            schema = headers.get("schema_version")
+            is_v2_like = (ctype == "application/octet-stream") or (cenc == "zstd") or (schema == "v2-bin")
+
+            if is_v2_like and PROCESSOR_MQ_FORMAT in ("v2", "both"):
+                process_raw_eeg_message_v2(ch, method, properties, body, db_conn)
+            elif PROCESSOR_MQ_FORMAT in ("v1", "both"):
+                process_raw_eeg_message(ch, method, properties, body, db_conn)
+            else:
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+        elif routing_key == "eeg.raw.bin":  # 互換: 旧v2キー
+            if PROCESSOR_MQ_FORMAT in ("v2", "both"):
+                process_raw_eeg_message_v2(ch, method, properties, body, db_conn)
+            else:
+                ch.basic_ack(delivery_tag=method.delivery_tag)
         elif routing_key == "media.raw":
             process_media_message(ch, method, properties, body, db_conn)
         else:
