@@ -65,30 +65,33 @@ ESP32 は 0.5 秒ごとに、以下の 2 つの要素を結合した**6802 バ�
 - **圧縮:** 生成された 6802 バイトのブロック全体が**Zstandard**で一括圧縮されます。Zstandard は、リアルタイム性が求められるストリーミングデータにおいて、圧縮率と速度のバランスに優れているため採用しました。
 - **送信フォーマット:** `[圧縮後サイズ(4バイト)] + [圧縮済みデータ本体]` という形式で BLE 送信されます。これにより、受信側は最初に 4 バイトを読むだけで、後続のデータ本体のサイズを正確に知ることができます。
 
-### 3.2 Smartphone -\> Collector: WebSocket ペイロード
+### 3.2 Smartphone -\> Collector: HTTP ペイロード
 
-スマホアプリは、BLE で受信した圧縮済みデータを**一切解釈せず**、そのまま WebSocket を通じてサーバーに転送します。
+スマホアプリは、BLE で受信した圧縮済みデータを**一切解釈せず**、HTTP POST リクエストのペイロードとして`ingress`サービスに送信します。
 
-- **プロトコル:** WebSocket (`ws://`)。低遅延かつ双方向通信が可能であり、連続的なデータストリームの転送に最適です。
-- **ペイロード:** アプリは受信した`[圧縮後サイズ(4バイト)] + [圧縮済みデータ本体]`というバイナリデータを、さらに JSON オブジェクトでラップして送信します。
+- **プロトコル:** HTTP POST。モバイルアプリからの送信が容易で、多くのライブラリでサポートされています。
+
+- **エンドポイント:** `/api/v1/data`
+
+- **ペイロード:** アプリは受信した圧縮済みバイナリデータを Base64 エンコードし、JSON オブジェクトでラップして送信します。
 
   ```json
   {
-    "device_id": "8C:BF:EA:8F:3D:E0", // 解凍せずともわかるように、アプリが付与
-    "server_received_timestamp": "2025-09-05T11:22:33.123Z", // アプリが受信した時刻
-    "payload": "base64エンコードされた圧縮済みバイナリデータ..."
+    "user_id": "user-default-01",
+    "payload_base64": "base64エンコードされた圧縮済みバイナリデータ..."
   }
   ```
 
-- **実装根拠:** この形式により、**Collector**サービスはペイロードの中身（`payload`）を解釈する必要がなくなり、メッセージを RabbitMQ に転送するだけの極めて軽量なプロキシとして機能できます。これにより、システムの入り口でのボトルネックを排除します。
+- **実装根拠:** この形式により、**Collector**サービスはペイロードの中身を解釈する必要がなくなり、メッセージを RabbitMQ に転送するだけの極めて軽量なプロキシとして機能できます。
 
 ### 3.3 Collector -\> RabbitMQ: メッセージスキーマ
 
-**Collector**は受信した JSON をそのまま RabbitMQ の`raw_data_exchange` (topic exchange) へ Publish します。
+**Collector**は受信した生バイナリデータを`raw_data_exchange` (fanout exchange) へ Publish します。
 
-- **Routing Key:** `eeg.raw`
-- **Message Body:** Smartphone から受信した JSON オブジェクトと同一。
-- **実装根拠:** `topic` exchange を採用することで、将来的に「特定のデバイス ID のデータだけを購読する」(`eeg.raw.DEV001`のような)ルーティングや、「全生データをロギングする」(`eeg.raw.#`を購読)といった、柔軟な拡張が可能になります。メッセージを`durable`（永続的）に設定することで、万が一 Processor がダウンしてもデータが失われないことを保証します。
+- **Exchange Type:** `fanout`
+- **Message Body:** Base64 デコードされた圧縮済みバイナリデータ本体。
+- **Message Headers:** `{ "user_id": "user-default-01" }`
+- **実装根拠:** `fanout` exchange を採用することで、単一の生データを**永続化処理 (`Processor`)とリアルタイム解析 (`Realtime Analyzer`)** の両方が同時に、かつ独立して受信できます。これにより、サービスの関心を完全に分離しています。
 
 ### 3.4 Processor -\> Database: データベーススキーマと格納ロジック
 
@@ -131,17 +134,29 @@ ESP32 は 0.5 秒ごとに、以下の 2 つの要素を結合した**6802 バ�
 
 Ingress (Nginx) は以下のエンドポイントを公開します。
 
-- `ws://<host>:8080/api/v1/eeg`
+- `/api/v1/data`
 
-  - **メソッド:** WebSocket
+  - **メソッド:** `POST`
   - **サービス:** `collector`
-  - **役割:** ESP32 からの圧縮済み生体信号データを受信します。
+  - **役割:** スマートフォンアプリからの圧縮済みセンサーデータを受信します。
+
+- `/api/v1/media`
+
+  - **メソッド:** `POST`
+  - **サービス:** `collector`
+  - **役割:** スマートフォンアプリからの画像・音声データを受信します。
+
+- `/api/v1/users/{user_id}/analysis`
+
+  - **メソッド:** `GET`
+  - **サービス:** `realtime_analyzer`
+  - **役割:** 指定されたユーザーの最新のリアルタイム解析結果（PSD/同期度の画像）を取得します。
 
 - `/api/v1/experiments`
 
-  - **メソッド:** `POST`
-  - **サービス:** `bids_manager`
-  - **役割:** 新しい実験セッションを開始します。
+  - **メソッド:** `GET`, `POST`
+  - **サービス:** `bids_manager` (または `session_manager`)
+  - **役割:** 実験の一覧取得や新規作成を行います。
 
 - `/api/v1/experiments/{experiment_id}/events`
 
@@ -175,49 +190,88 @@ Ingress (Nginx) は以下のエンドポイントを公開します。
 - Docker Engine
 - Docker Compose
 
-### 手順
+### 5.1 基本セットアップ
 
-1. **リポジトリのクローン:**
+1.  **リポジトリのクローン:**
 
-   ```bash
-   git clone <repository_url>
-   cd eeg-server
-   ```
+    ```bash
+    git clone <repository_url>
+    cd eeg-server
+    ```
 
-2. **.env ファイルの作成:**
-   プロジェクトのルートディレクトリに`.env`という名前のファイルを新規作成し、以下の内容を記述します。
+2.  **.env ファイルの作成:**
+    プロジェクトのルートディレクトリに`.env`という名前のファイルを新規作成し、以下の内容を記述します。
 
-   ```ini
-   # RabbitMQ Settings
-   RABBITMQ_USER=guest
-   RABBITMQ_PASSWORD=guest
-   RABBITMQ_HOST=rabbitmq
-   RABBITMQ_MGMT_PORT=15672
+    ```ini
+    # RabbitMQ Settings
+    RABBITMQ_USER=guest
+    RABBITMQ_PASSWORD=guest
+    RABBITMQ_HOST=rabbitmq
+    RABBITMQ_MGMT_PORT=15672
 
-   # PostgreSQL/TimescaleDB Settings
-   POSTGRES_USER=admin
-   POSTGRES_PASSWORD=password
-   POSTGRES_DB=erp_data
-   POSTGRES_HOST=db
+    # PostgreSQL/TimescaleDB Settings
+    POSTGRES_USER=admin
+    POSTGRES_PASSWORD=password
+    POSTGRES_DB=erp_data
+    POSTGRES_HOST=db
 
-   # Nginx Port
-   NGINX_PORT=8080
-   ```
+    # Nginx Port
+    NGINX_PORT=8080
+    ```
 
-3. **コンテナのビルドと起動:**
-   以下のコマンドで、全サービスの Docker イメージをビルドし、バックグラウンドで起動します。
+3.  **コンテナのビルドと起動:**
+    以下のコマンドで、全サービスの Docker イメージをビルドし、バックグラウンドで起動します。
 
-   ```bash
-   docker compose up --build -d
-   ```
+    ```bash
+    docker compose up --build -d
+    ```
 
-4. **起動状態の確認:**
+### 5.2 モバイルアプリ連携のための開発環境設定（WSL2 + Windows）
 
-   ```bash
-   docker compose ps
-   ```
+スマートフォン実機やエミュレータから、WSL2 上の Docker コンテナへ接続するには、**PC のネットワーク設定が必須**です。
 
-   全てのサービスの`STATUS`が`running`または`running (healthy)`になっていれば成功です。
+#### なぜ設定が必要か？
+
+WSL2 は Windows とは別の仮想ネットワークを持つため、スマホから PC の IP アドレスにアクセスしても、その通信は WSL 内部まで届きません。これを解決するため、**ポートフォワーディング**と**ファイアウォール設定**の 2 つを行います。
+
+#### ステップ 1: 必要な IP アドレスを 2 つ調べる
+
+1.  **Windows の IP アドレスを確認:**
+
+    - Windows の**コマンドプロンプト**で`ipconfig`を実行し、「IPv4 アドレス」をメモします。（例: `192.168.128.151`）
+
+2.  **WSL の IP アドレスを確認:**
+
+    - **WSL のターミナル**で`hostname -I`または`ip -4 a`を実行し、`eth0`の`inet`アドレスをメモします。（例: `172.26.232.13`）
+
+#### ステップ 2: ポートフォワーディングを設定する
+
+Windows に来た通信を WSL へ転送するルールを追加します。
+
+1.  \*\*PowerShell を「管理者として実行」\*\*します。
+
+2.  以下のコマンドの`<...>`部分を、ステップ 1 で調べた IP アドレスに置き換えて実行します。
+
+    ```powershell
+    # 構文: netsh interface portproxy add v4tov4 listenport=<公開ポート> listenaddress=<WindowsのIP> connectport=<転送先ポート> connectaddress=<WSLのIP>
+    netsh interface portproxy add v4tov4 listenport=8080 listenaddress=192.168.128.151 connectport=8080 connectaddress=172.26.232.13
+    ```
+
+#### ステップ 3: Windows Defender ファイアウォールの設定
+
+外部（スマホ）からの通信を許可するルールを追加します。
+
+1.  \*\*PowerShell を「管理者として実行」\*\*します。
+
+2.  以下のコマンドを実行し、ポート`8080`への受信（Inbound）を許可します。
+
+    ```powershell
+    New-NetFirewallRule -DisplayName "WSL Port 8080 Allow" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+    ```
+
+これで、スマホアプリの`.env`ファイルに`SERVER_IP=<WindowsのIP>`と`SERVER_PORT=8080`を設定すれば、通信が可能になります。
+
+---
 
 ### 開発者向けセットアップ（VSCode/WSL2 ｜フォーマッタ/リンタ）
 
@@ -313,7 +367,26 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 
 ## 6\. テスト方法 (How to Test)
 
-`tools/dummy_data_sender.py`スクリプトを使って、システム全体の動作をエンドツーエンドでテストできます。
+### 6.1 Collector サービスの単体テスト
+
+`collector`サービス単体の動作を、RabbitMQ と連携して確認します。
+
+1.  **必要なサービスを起動:**
+    ```bash
+    docker-compose up -d rabbitmq collector
+    ```
+2.  **テストスクリプトを実行:**
+    `collector`ディレクトリに移動し、依存パッケージをインストールしてからテストを実行します。
+    ```bash
+    cd collector
+    npm install
+    npm run test:standalone
+    ```
+3.  ターミナルに`✅ All tests passed successfully!`と表示されれば成功です。
+
+### 6.2 エンドツーエンドテスト
+
+`tools/dummy_data_sender.py`スクリプトを使って、システム全体の動作をテストできます。
 
 1. **テストの自動実行（インストール込み）:**
    下記コマンドで、必要ライブラリの導入とテスト実行までを自動化しています（uv 使用）。
