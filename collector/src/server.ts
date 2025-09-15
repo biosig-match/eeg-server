@@ -1,232 +1,229 @@
 import amqp, { Channel, Connection } from 'amqplib';
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import multer from 'multer';
 import { AddressInfo } from 'net';
-import { v4 as uuidv4 } from 'uuid';
-import { WebSocketServer } from 'ws';
 
-// --- 環境変数と設定 ---
+// --- 環境変数と設定 (Constants) ---
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@rabbitmq';
 const PORT = process.env.PORT || 3000;
-const RAW_DATA_EXCHANGE = 'raw_data_exchange';
 
-// --- Expressアプリケーションのセットアップ ---
+// ドキュメントで定義されたExchangeとQueueの名前
+const RAW_DATA_EXCHANGE = 'raw_data_exchange';
+const MEDIA_PROCESSING_QUEUE = 'media_processing_queue';
+
+// --- Expressアプリケーションのセットアップ (Application Setup) ---
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
 const upload = multer({ storage: multer.memoryStorage() });
+
+// JSONボディパーサーを有効化
+app.use(express.json({ limit: '10mb' })); // センサーデータ用に上限を緩和
 
 let amqpConnection: Connection | null = null;
 let amqpChannel: Channel | null = null;
 
-// --- RabbitMQ接続・再接続ロジック ---
+// --- RabbitMQ接続・再接続ロジック (RabbitMQ Connection Logic) ---
 async function connectRabbitMQ() {
   let attempts = 0;
   while (true) {
     try {
-      console.log(`[RabbitMQ] 接続を試みています... (試行回数: ${attempts + 1})`);
-
-      // ★★★ これが公式ライブラリの正しい接続方法です ★★★
+      console.log(`[RabbitMQ] Connecting... (Attempt: ${attempts + 1})`);
       const connection = await amqp.connect(RABBITMQ_URL);
 
       connection.on('close', () => {
-        console.error('❌ [RabbitMQ] 接続が閉じられました。5秒後に再接続します...');
+        console.error('❌ [RabbitMQ] Connection closed. Reconnecting in 5 seconds...');
         amqpConnection = null;
         amqpChannel = null;
         setTimeout(connectRabbitMQ, 5000);
       });
       connection.on('error', (err) => {
-        console.error('❌ [RabbitMQ] 接続エラー:', err.message);
+        console.error('❌ [RabbitMQ] Connection error:', err.message);
       });
 
-      console.log('✅ [RabbitMQ] 接続に成功しました。');
+      console.log('✅ [RabbitMQ] Connection successful.');
       amqpConnection = connection;
-      await createChannel();
+      await setupChannelAndTopology();
       break;
     } catch (err: any) {
-      console.error(`❌ [RabbitMQ] 接続に失敗しました: ${err.message}`);
+      console.error(`❌ [RabbitMQ] Connection failed: ${err.message}`);
       attempts++;
       const delay = Math.min(30000, 2 ** attempts * 1000);
-      console.log(`[RabbitMQ] ${delay / 1000}秒後に再試行します...`);
+      console.log(`[RabbitMQ] Retrying in ${delay / 1000} seconds...`);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 }
 
-async function createChannel() {
+async function setupChannelAndTopology() {
   if (!amqpConnection) {
-    console.warn('[RabbitMQ] チャネル作成スキップ: 接続がありません。');
+    console.warn('[RabbitMQ] Channel setup skipped: no connection.');
     return;
   }
   try {
-    // ★★★ Connectionオブジェクトからチャネルを作成します ★★★
     amqpChannel = await amqpConnection.createChannel();
-    console.log('✅ [RabbitMQ] チャネルを作成しました。');
-    await amqpChannel.assertExchange(RAW_DATA_EXCHANGE, 'topic', { durable: true });
-    console.log(`✅ [RabbitMQ] エクスチェンジ "${RAW_DATA_EXCHANGE}" の準備が完了しました。`);
+    console.log('✅ [RabbitMQ] Channel created.');
+
+    // ★★★ ドキュメントに基づき、ExchangeとQueueを準備 ★★★
+    // センサーデータ用のFanout Exchange
+    await amqpChannel.assertExchange(RAW_DATA_EXCHANGE, 'fanout', { durable: true });
+    console.log(`✅ [RabbitMQ] Fanout Exchange "${RAW_DATA_EXCHANGE}" is ready.`);
+
+    // メディアデータ用のDirect Queue
+    await amqpChannel.assertQueue(MEDIA_PROCESSING_QUEUE, { durable: true });
+    console.log(`✅ [RabbitMQ] Queue "${MEDIA_PROCESSING_QUEUE}" is ready.`);
   } catch (err: any) {
-    console.error('❌ [RabbitMQ] チャネルの作成に失敗しました:', err.message);
+    console.error('❌ [RabbitMQ] Channel setup failed:', err.message);
     amqpChannel = null;
   }
 }
 
-// --- WebSocketサーバー ---
-wss.on('connection', (ws, req) => {
-  console.log('[WebSocket] クライアントが接続しました。');
-  // クエリからメタデータを取得（WSバイナリ入力時に利用）
-  let wsMeta: { device_id?: string; experiment_id?: string | null; epoch_id?: number | null } = {};
-  try {
-    const url = new URL(req.url || '', 'http://localhost');
-    const device_id = url.searchParams.get('device_id') || undefined;
-    const experiment_id = url.searchParams.get('experiment_id');
-    const epoch_id = url.searchParams.get('epoch_id');
-    wsMeta = {
-      device_id,
-      experiment_id: experiment_id || null,
-      epoch_id: epoch_id ? parseInt(epoch_id, 10) : null,
-    };
-  } catch (_) {
-    // ignore parse errors
-  }
-  ws.on('message', (message) => {
-    if (!amqpChannel) {
-      console.warn('[WebSocket] メッセージを破棄しました: RabbitMQチャネルが利用できません。');
-      return;
-    }
-
-    // RawData: Buffer | ArrayBuffer | string | Buffer[]
-    const isBuffer = Buffer.isBuffer(message);
-    const isArrayBuffer = (message as any) instanceof ArrayBuffer;
-    const toBuffer = (): Buffer => {
-      if (isBuffer) return message as Buffer;
-      if (isArrayBuffer) return Buffer.from(message as ArrayBuffer);
-      if (Array.isArray(message)) return Buffer.concat(message as Buffer[]);
-      return Buffer.from(String(message));
-    };
-
-    // Heuristic: treat as JSON if it looks like JSON text
-    const asString = (() => {
-      try {
-        if (typeof message === 'string') return message as string;
-        if (isBuffer) return (message as Buffer).toString('utf8');
-        if (isArrayBuffer) return Buffer.from(message as ArrayBuffer).toString('utf8');
-        if (Array.isArray(message)) return Buffer.concat(message as Buffer[]).toString('utf8');
-      } catch (_) {
-        /* noop */
-      }
-      return '';
-    })();
-
-    const looksLikeJson = asString.trim().startsWith('{') && asString.trim().endsWith('}');
-
-    try {
-      if (looksLikeJson) {
-        const parsed = JSON.parse(asString);
-        const base64Payload: string | undefined = parsed?.payload;
-        if (typeof base64Payload === 'string' && base64Payload.length > 0) {
-          const compressed = Buffer.from(base64Payload, 'base64');
-          const headers: Record<string, any> = {
-            device_id: parsed?.device_id ?? 'unknown',
-            experiment_id: parsed?.experiment_id ?? null,
-            epoch_id: parsed?.epoch_id ?? null,
-            server_received_timestamp:
-              parsed?.server_received_timestamp ?? new Date().toISOString(),
-            schema_version: 'v2-bin',
-          };
-          amqpChannel.publish(
-            RAW_DATA_EXCHANGE,
-            'eeg.raw',
-            compressed,
-            {
-              persistent: true,
-              contentType: 'application/octet-stream',
-              contentEncoding: 'zstd',
-              timestamp: Math.floor(Date.now() / 1000),
-              headers,
-            },
-          );
-        } else {
-          console.warn('[Collector] JSONにpayloadがありません。スキップしました。');
-        }
-      } else {
-        // Binary WebSocket v2: 受信したバイナリをそのまま publish（zstd圧縮済み想定）
-        const buf = toBuffer();
-        const headers: Record<string, any> = {
-          device_id: wsMeta.device_id ?? 'unknown',
-          experiment_id: wsMeta.experiment_id ?? null,
-          epoch_id: wsMeta.epoch_id ?? null,
-          server_received_timestamp: new Date().toISOString(),
-          schema_version: 'v2-bin',
-        };
-        amqpChannel.publish(
-          RAW_DATA_EXCHANGE,
-          'eeg.raw',
-          buf,
-          {
-            persistent: true,
-            contentType: 'application/octet-stream',
-            contentEncoding: 'zstd',
-            timestamp: Math.floor(Date.now() / 1000),
-            headers,
-          },
-        );
-      }
-    } catch (e: any) {
-      console.error('[WebSocket] 受信メッセージ処理に失敗:', e?.message || e);
-    }
-  });
-  ws.on('close', () => console.log('[WebSocket] クライアントが切断されました。'));
-});
-
-// --- HTTP APIエンドポイント ---
-app.get('/api/v1/health', (req, res) => {
-  res.status(200).json({ status: 'ok', rabbitmq_connected: !!amqpChannel });
-});
-
-app.post(
-  '/api/v1/media',
-  upload.fields([
-    { name: 'image', maxCount: 1 },
-    { name: 'audio', maxCount: 1 },
-  ]),
-  (req, res) => {
-    if (!amqpChannel) {
-      return res.status(503).json({ error: 'メッセージブローカーが利用できません。' });
-    }
-
-    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-
-    const message = {
-      message_id: uuidv4(),
-      device_id: req.body.device_id,
-      epoch_id: parseInt(req.body.epoch_id, 10),
-      experiment_id: req.body.experiment_id || null,
-      timestamp_ms: parseFloat(req.body.timestamp_ms),
-      image: files.image
-        ? {
-            payload: files.image[0].buffer.toString('base64'),
-            mimetype: files.image[0].mimetype,
-          }
-        : null,
-      audio: files.audio
-        ? {
-            payload: files.audio[0].buffer.toString('base64'),
-            mimetype: files.audio[0].mimetype,
-          }
-        : null,
-    };
-
-    amqpChannel.publish(RAW_DATA_EXCHANGE, 'media.raw', Buffer.from(JSON.stringify(message)), {
-      persistent: true,
+// --- ミドルウェア (Middleware) ---
+// RabbitMQチャネルが利用可能かチェックするミドルウェア
+const checkRabbitMQ = (req: Request, res: Response, next: NextFunction) => {
+  if (!amqpChannel) {
+    return res.status(503).json({
+      error: 'Service Unavailable',
+      message: 'The message broker is not available at the moment. Please try again later.',
     });
-    res.status(202).json({ status: 'accepted' });
-  },
-);
+  }
+  next();
+};
 
-// --- サーバーの起動 ---
+// --- HTTP APIエンドポイント (HTTP API Endpoints) ---
+
+/**
+ * @route GET /api/v1/health
+ * @description サービスの稼働状態とRabbitMQへの接続状態を返す
+ */
+app.get('/api/v1/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'collector-service',
+    rabbitmq_connected: !!amqpChannel,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * @route POST /api/v1/data
+ * @description センサーデータ(圧縮バイナリ)を受信し、raw_data_exchangeへ転送する
+ * @input JSON { user_id: string, payload_base64: string }
+ */
+app.post('/api/v1/data', checkRabbitMQ, (req: Request, res: Response) => {
+  const { user_id, payload_base64 } = req.body;
+
+  // バリデーション
+  if (typeof user_id !== 'string' || typeof payload_base64 !== 'string') {
+    return res
+      .status(400)
+      .json({
+        error: 'Bad Request',
+        message: '`user_id` and `payload_base64` are required and must be strings.',
+      });
+  }
+
+  try {
+    const binaryPayload = Buffer.from(payload_base64, 'base64');
+    const headers = { user_id };
+
+    // Fanout Exchangeにpublish (ルーティングキーは不要)
+    amqpChannel!.publish(RAW_DATA_EXCHANGE, '', binaryPayload, {
+      persistent: true,
+      headers: headers,
+      timestamp: Date.now(),
+      contentType: 'application/octet-stream',
+      contentEncoding: 'zstd', // ファームウェアからのデータはzstd圧縮済み
+    });
+
+    console.log(
+      `[HTTP:/data] Published sensor data for user: ${user_id} (${binaryPayload.length} bytes)`,
+    );
+    res.status(202).json({ status: 'accepted' });
+  } catch (error: any) {
+    console.error('❌ [HTTP:/data] Error processing request:', error.message);
+    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+/**
+ * @route POST /api/v1/media
+ * @description メディアファイルとメタデータを受信し、media_processing_queueへ転送する
+ * @input Multipart/form-data
+ */
+app.post('/api/v1/media', checkRabbitMQ, upload.single('file'), (req: Request, res: Response) => {
+  // バリデーション
+  if (!req.file) {
+    return res
+      .status(400)
+      .json({ error: 'Bad Request', message: 'A media file is required in the `file` field.' });
+  }
+
+  const {
+    user_id,
+    session_id,
+    mimetype,
+    original_filename,
+    timestamp_utc, // for images
+    start_time_utc, // for audio
+    end_time_utc, // for audio
+  } = req.body;
+
+  if (!user_id || !session_id || !mimetype || !original_filename) {
+    return res
+      .status(400)
+      .json({
+        error: 'Bad Request',
+        message:
+          'Missing one or more required metadata fields: user_id, session_id, mimetype, original_filename.',
+      });
+  }
+
+  try {
+    const fileBuffer = req.file.buffer;
+
+    // ヘッダーに全てのメタデータを含める
+    const headers = {
+      user_id,
+      session_id,
+      mimetype,
+      original_filename,
+      ...(timestamp_utc && { timestamp_utc }),
+      ...(start_time_utc && { start_time_utc }),
+      ...(end_time_utc && { end_time_utc }),
+    };
+
+    // 特定のキューに直接送信
+    amqpChannel!.sendToQueue(MEDIA_PROCESSING_QUEUE, fileBuffer, {
+      persistent: true,
+      headers: headers,
+      timestamp: Date.now(),
+      contentType: mimetype,
+    });
+
+    console.log(
+      `[HTTP:/media] Queued media file for user: ${user_id}, session: ${session_id} (${fileBuffer.length} bytes)`,
+    );
+    res.status(202).json({ status: 'accepted' });
+  } catch (error: any) {
+    console.error('❌ [HTTP:/media] Error processing request:', error.message);
+    res.status(500).json({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+// --- 404 Not Found ハンドラ ---
+app.use((req, res, next) => {
+  res
+    .status(404)
+    .json({
+      error: 'Not Found',
+      message: `The requested endpoint ${req.method} ${req.path} does not exist.`,
+    });
+});
+
+// --- サーバーの起動 (Server Initialization) ---
 server.listen(PORT, () => {
   connectRabbitMQ();
   const address = server.address() as AddressInfo;
-  console.log(`🚀 Collectorサービスがポート ${address.port} で起動しました。`);
+  console.log(`🚀 Collector service is running on port ${address.port}`);
 });
