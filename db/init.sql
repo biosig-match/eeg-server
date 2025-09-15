@@ -9,8 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS experiments (
     experiment_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
-    description TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    description TEXT
 );
 
 -- Table for managing measurement sessions
@@ -23,8 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ,
     session_type VARCHAR(50),
-    link_status VARCHAR(50) NOT NULL DEFAULT 'pending', -- e.g., pending, processing, completed, failed
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    link_status VARCHAR(50) NOT NULL DEFAULT 'pending' -- e.g., pending, processing, completed, failed
 );
 
 -- Table for event markers (triggers) within a session
@@ -32,8 +30,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS events (
     id BIGSERIAL PRIMARY KEY,
     session_id VARCHAR(255) NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    onset_s DOUBLE PRECISION NOT NULL, -- Onset time in seconds from the session start
-    duration_s DOUBLE PRECISION NOT NULL,
+    onset DOUBLE PRECISION NOT NULL, -- Onset time in seconds from the session start
+    duration DOUBLE PRECISION NOT NULL,
     description TEXT,
     value VARCHAR(255) -- e.g., 'stimulus/left', 't-posed'
 );
@@ -45,8 +43,7 @@ CREATE TABLE IF NOT EXISTS raw_data_objects (
     user_id VARCHAR(255) NOT NULL,
     device_id VARCHAR(255),
     start_time TIMESTAMPTZ NOT NULL,
-    end_time TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    end_time TIMESTAMPTZ NOT NULL
 );
 
 -- Junction table to link sessions and raw_data_objects
@@ -64,8 +61,7 @@ CREATE TABLE IF NOT EXISTS images (
     user_id VARCHAR(255) NOT NULL,
     session_id VARCHAR(255), -- No foreign key constraint to allow asynchronous insertion
     experiment_id UUID REFERENCES experiments(experiment_id) ON DELETE SET NULL, -- Linked by DataLinker
-    timestamp_utc TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    timestamp_utc TIMESTAMPTZ NOT NULL
 );
 
 -- Table for metadata of audio clips stored in MinIO
@@ -75,8 +71,7 @@ CREATE TABLE IF NOT EXISTS audio_clips (
     session_id VARCHAR(255), -- No foreign key constraint to allow asynchronous insertion
     experiment_id UUID REFERENCES experiments(experiment_id) ON DELETE SET NULL, -- Linked by DataLinker
     start_time TIMESTAMPTZ NOT NULL,
-    end_time TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    end_time TIMESTAMPTZ NOT NULL
 );
 
 -- Create indexes to improve query performance
