@@ -8,7 +8,7 @@
 
 ### 主な機能
 
-- **リアルタイムデータ収集:** WebSocket を通じて、低遅延で連続的な生体信号データを受信。
+- **リアルタイムデータ収集:** HTTP API を通じて、連続的な生体信号データを受信。
 - **非同期処理パイプライン:** RabbitMQ メッセージキューを利用し、大量のデータを安定して処理。
 - **時系列データベース:** TimescaleDB (PostgreSQL 拡張) を採用し、膨大なセンサーデータを効率的に格納・クエリ。
 - **BIDS 自動エクスポート:** 収集した実験データとイベント情報を紐付け、BIDS 規約に準拠した形式で自動出力。
@@ -16,19 +16,20 @@
 
 ## 2\. システムアーキテクチャ (System Architecture)
 
-本システムは 7 つの独立した Docker コンテナで構成され、`docker-compose.yml`によって連携して動作します。
+本システムは 6 つの独立した Docker サービスで構成され、`docker-compose.yml`によって連携して動作します。
+また、Processor サービスは 2 つのレプリカで並列実行されます。
 
 ### サービス一覧
 
-| サービス              | コンテナ名               | 役割                                                                                                                                                       |
-| :-------------------- | :----------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Ingress**           | `erp_ingress`            | **API ゲートウェイ (Nginx)**。全ての外部リクエストを受け付け、適切なサービスに振り分ける。WebSocket 通信のプロキシも担当。                                 |
-| **Collector**         | `erp_collector`          | **データ受信 API (Node.js)**。WebSocket (EEG/IMU) と HTTP (メディア) の両方からデータを受信し、一切の処理をせず即座に RabbitMQ へ転送する。                |
-| **Processor**         | `eeg-server-processor-n` | **データ処理ワーカー (Python)**。RabbitMQ から生データを受信し、解凍・パース・タイムスタンプ計算を行い、TimescaleDB に格納する。CPU 負荷の高い処理を担う。 |
-| **BIDS Manager**      | `erp_bids_manager`       | **実験管理・BIDS エクスポート API (Python/Flask)**。実験の開始/終了、イベント CSV の登録、BIDS エクスポートの非同期実行を管理する。                        |
-| **Realtime Analyzer** | `erp_realtime_analyzer`  | **リアルタイム解析 API (Python/Flask)**。処理済みの脳波データを購読し、PSD や同期度を計算してアプリに結果を提供する。                                      |
-| **Database**          | `erp_db`                 | **時系列データベース (TimescaleDB)**。全ての実験メタデータ、脳波・IMU データ、イベント情報を永続化する。                                                   |
-| **Message Queue**     | `erp_rabbitmq`           | **メッセージブローカー (RabbitMQ)**。サービス間のデータの受け渡しを非同期で行い、システム全体の安定性を担保する。                                          |
+| サービス              | コンテナ名               | 役割                                                                                                                                                      |
+| :-------------------- | :----------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ingress**           | `erp_ingress`            | **API ゲートウェイ (Nginx)**。HTTP リクエストを受け付け、適切なサービスに振り分ける。                                                                     |
+| **Collector**         | `erp_collector`          | **データ受信 API (Node.js)**。HTTP 経由でセンサーデータとメディアファイルを受信し、一切の処理をせず即座に RabbitMQ へ転送する。                           |
+| **Processor**         | `eeg-server-processor-*` | **データ処理ワーカー (Python)**。RabbitMQ から生データを受信し、解凍・パース・タイムスタンプ計算を行い、PostgreSQL に格納する。2 つのレプリカで並列実行。 |
+| **BIDS Manager**      | `erp_bids_manager`       | **実験管理・BIDS エクスポート API (Python/Flask)**。実験の開始/終了、イベント CSV の登録、BIDS エクスポートの非同期実行を管理する。                       |
+| **Realtime Analyzer** | `erp_realtime_analyzer`  | **リアルタイム解析 API (Python/Flask)**。処理済みの脳波データを購読し、PSD や同期度を計算してアプリに結果を提供する。                                     |
+| **Database**          | `erp_db`                 | **PostgreSQL データベース (TimescaleDB 拡張)**。実験メタデータ、セッション情報、イベント情報、メディアファイル情報を永続化する。                          |
+| **Message Queue**     | `erp_rabbitmq`           | **メッセージブローカー (RabbitMQ)**。サービス間のデータの受け渡しを非同期で行い、システム全体の安定性を担保する。                                         |
 
 ## 3\. データフローとスキーマ詳細 (Data Flow & Schema Details)
 
@@ -100,87 +101,109 @@ ESP32 は 0.5 秒ごとに、以下の 2 つの要素を結合した**6802 バ�
 #### 3.4.1 格納ロジック
 
 1. **タイムスタンプ復元:** Processor は、メッセージ内の`server_received_timestamp`と、解凍したデータ内の最後の`timestamp_us`を比較し、その差分からデバイスの\*\*推定起動時刻 (Estimated Boot Time)\*\*を算出します。この推定起動時刻に、各サンプルの`timestamp_us`を加算することで、ネットワーク遅延を補正した極めて正確な UTC タイムスタンプを復元します。
-2. **データ分割:** 1 つのパケットに含まれる 128 個のサンプルは、それぞれ正規化された上で`eeg_raw_data`テーブルと`imu_raw_data`テーブルに分割して格納されます。
-3. **実験 ID の紐付け:** 各サンプルを DB に挿入する際、`experiments`テーブルを検索し、その`device_id`に現在進行中（`end_time`が NULL）の実験があれば、その`experiment_id`をレコードに付与します。
+2. **データ分割:** 1 つのパケットに含まれる 128 個のサンプルは、それぞれ正規化された上でセッション管理用のテーブル群に格納されます。
+3. **セッションリンキング:** 受信した生データは `raw_data_objects` テーブルに登録され、時間範囲に基づいて相当するセッションとリンクされます。
 
-#### 3.4.2 データベーススキーマ (TimescaleDB)
+#### 3.4.2 データベーススキーマ (PostgreSQL + TimescaleDB 拡張)
 
-- **`experiments`**
+本システムでは、セッションベースのデータ管理アーキテクチャを採用しています：
 
-  - `experiment_id` (UUID, PK): 一意な実験 ID。
-  - `participant_id` (TEXT): 被験者 ID (`sub-xx`)。
-  - `device_id` (TEXT): 使用されたデバイスの MAC アドレス。
-  - `start_time` / `end_time` (TIMESTAMPTZ): **[重要]** タイムゾーン情報を含む`TIMESTAMPTZ`型を使用し、全世界のどこで実験が行われても時刻の曖昧さを排除します。
-  - `metadata` (JSONB): サンプリング周波数、チャンネル名など、BIDS 生成に必要な静的情報。インデックスが効く`JSONB`を採用。
+- **`experiments`**: 実験の管理テーブル
 
-- **`eeg_raw_data` (Hypertable)**
+  - `experiment_id` (UUID, PK): 一意な実験 ID
+  - `name` (VARCHAR): 実験名
+  - `description` (TEXT): 実験の説明
 
-  - `timestamp` (TIMESTAMPTZ, PK): **[最重要]** TimescaleDB の Hypertable の主キー。この列で自動的にパーティショニングされます。
-  - `device_id` (TEXT, PK): 複合主キーの一部。
-  - `experiment_id` (UUID, FK): `experiments`テーブルへの外部キー。NULL を許容。
-  - `eeg_values` (SMALLINT[]): 8ch 分の EEG 値。PostgreSQL の配列型`SMALLINT[]`を使うことで、1 レコードに全チャンネルの値を効率的に格納し、ストレージとクエリ性能を両立させます。
-  - `impedance_values` (SMALLINT[]): 同上。
-  - `trigger_value` (SMALLINT): `0`または`1`。
+- **`sessions`**: 測定セッションの管理テーブル
 
-- **`experiment_events`**
+  - `session_id` (VARCHAR, PK): セッションの一意 ID
+  - `user_id` (VARCHAR): ユーザー ID
+  - `experiment_id` (UUID, FK): 所属する実験
+  - `device_id` (VARCHAR): 使用デバイス ID
+  - `start_time` / `end_time` (TIMESTAMPTZ): セッションの開始・終了時刻
+  - `session_type` (VARCHAR): セッションタイプ
+  - `link_status` (VARCHAR): リンキング状態 (pending/processing/completed/failed)
 
-  - `event_id` (BIGSERIAL, PK): イベントの主キー。
-  - `experiment_id` (UUID, FK): どの実験に属するイベントかを示す。
-  - `onset` (DOUBLE PRECISION): **[重要]** 記録開始からの経過**秒数**。BIDS 規約に準拠。
-  - `duration` (DOUBLE PRECISION): イベントの持続時間（秒）。
-  - `description` (TEXT): イベントの内容 (`target/image.jpg`など)。
+- **`events`**: イベントマーカーの管理テーブル
+
+  - `id` (BIGSERIAL, PK): イベント ID
+  - `session_id` (VARCHAR, FK): 所属セッション
+  - `onset` (DOUBLE PRECISION): セッション開始からの経過秒数
+  - `duration` (DOUBLE PRECISION): 持続時間（秒）
+  - `description` (TEXT): イベントの説明
+  - `value` (VARCHAR): イベント値 (stimulus/left, t-posed など)
+
+- **`raw_data_objects`**: 生データオブジェクトのメタデータテーブル
+
+  - `object_id` (VARCHAR, PK): オブジェクトの一意 ID
+  - `user_id` (VARCHAR): ユーザー ID
+  - `device_id` (VARCHAR): デバイス ID
+  - `start_time` / `end_time` (TIMESTAMPTZ): データの時間範囲
+
+- **`session_object_links`**: セッションと生データのリンキングテーブル
+
+  - `session_id` (VARCHAR, FK): セッション ID
+  - `object_id` (VARCHAR, FK): オブジェクト ID
+  - 複合主キー: (session_id, object_id)
+
+- **`images`**: 画像ファイルのメタデータテーブル
+
+  - `object_id` (VARCHAR, PK): オブジェクト ID
+  - `user_id` (VARCHAR): ユーザー ID
+  - `session_id` (VARCHAR): 関連セッション ID
+  - `experiment_id` (UUID, FK): 関連実験 ID
+  - `timestamp_utc` (TIMESTAMPTZ): 撮影時刻
+
+- **`audio_clips`**: 音声ファイルのメタデータテーブル
+  - `object_id` (VARCHAR, PK): オブジェクト ID
+  - `user_id` (VARCHAR): ユーザー ID
+  - `session_id` (VARCHAR): 関連セッション ID
+  - `experiment_id` (UUID, FK): 関連実験 ID
+  - `start_time` / `end_time` (TIMESTAMPTZ): 録音の時間範囲
 
 ## 4\. API エンドポイント (API Endpoints)
 
 Ingress (Nginx) は以下のエンドポイントを公開します。
 
+### 現在利用可能なエンドポイント
+
 - `/api/v1/data`
 
   - **メソッド:** `POST`
   - **サービス:** `collector`
-  - **役割:** スマートフォンアプリからの圧縮済みセンサーデータを受信します。
+  - **役割:** スマートフォンアプリからの圧縮済みセンサーデータを受信
 
 - `/api/v1/media`
 
   - **メソッド:** `POST`
   - **サービス:** `collector`
-  - **役割:** スマートフォンアプリからの画像・音声データを受信します。
+  - **役割:** スマートフォンアプリからの画像・音声データを受信
 
-- `/api/v1/users/{user_id}/analysis`
+- `/api/v1/timestamps/sync`
+
+  - **メソッド:** `POST`
+  - **サービス:** `collector`
+  - **役割:** タイムスタンプ同期用エンドポイント
+
+- `/api/v1/users/`
 
   - **メソッド:** `GET`
   - **サービス:** `realtime_analyzer`
-  - **役割:** 指定されたユーザーの最新のリアルタイム解析結果（PSD/同期度の画像）を取得します。
+  - **役割:** リアルタイム解析結果の取得
 
-- `/api/v1/experiments`
-
-  - **メソッド:** `GET`, `POST`
-  - **サービス:** `bids_manager` (または `session_manager`)
-  - **役割:** 実験の一覧取得や新規作成を行います。
-
-- `/api/v1/experiments/{experiment_id}/events`
-
-  - **メソッド:** `POST`
-  - **サービス:** `bids_manager`
-  - **役割:** イベントが記述された CSV ファイルをアップロードし、実験を終了します。
-
-- `/api/v1/experiments/{experiment_id}/export`
-
-  - **メソッド:** `POST`
-  - **サービス:** `bids_manager`
-  - **役割:** 指定された実験の BIDS エクスポートタスクを開始します。
-
-- `/api/v1/export-tasks/{task_id}`
-
+- `/api/v1/health`
   - **メソッド:** `GET`
-  - **サービス:** `bids_manager`
-  - **役割:** BIDS エクスポートタスクの進捗状況を確認します。
+  - **サービス:** `collector`
+  - **役割:** システムヘルスチェック
 
-- `/api/v1/analysis/results`
+### ⚠️ 現在利用不可なエンドポイント
 
-  - **メソッド:** `GET`
-  - **サービス:** `realtime_analyzer`
-  - **役割:** 最新のリアルタイム解析結果（PSD/同期度の画像）を取得します。
+以下の BIDS Manager サービスのエンドポイントは、nginx のルーティング設定が未完成のため、外部からアクセスできません：
+
+- `/api/v1/experiments` (実験管理)
+- `/api/v1/experiments/{experiment_id}/events` (イベント登録)
+- `/api/v1/experiments/{experiment_id}/export` (BIDS エクスポート)
+- `/api/v1/export-tasks/{task_id}` (エクスポート状態確認)
 
 ## 5\. 実行方法 (Getting Started)
 
@@ -192,39 +215,39 @@ Ingress (Nginx) は以下のエンドポイントを公開します。
 
 ### 5.1 基本セットアップ
 
-1.  **リポジトリのクローン:**
+1. **リポジトリのクローン:**
 
-    ```bash
-    git clone <repository_url>
-    cd eeg-server
-    ```
+   ```bash
+   git clone <repository_url>
+   cd eeg-server
+   ```
 
-2.  **.env ファイルの作成:**
-    プロジェクトのルートディレクトリに`.env`という名前のファイルを新規作成し、以下の内容を記述します。
+2. **.env ファイルの作成:**
+   プロジェクトのルートディレクトリに`.env`という名前のファイルを新規作成し、以下の内容を記述します。
 
-    ```ini
-    # RabbitMQ Settings
-    RABBITMQ_USER=guest
-    RABBITMQ_PASSWORD=guest
-    RABBITMQ_HOST=rabbitmq
-    RABBITMQ_MGMT_PORT=15672
+   ```ini
+   # RabbitMQ Settings
+   RABBITMQ_USER=guest
+   RABBITMQ_PASSWORD=guest
+   RABBITMQ_HOST=rabbitmq
+   RABBITMQ_MGMT_PORT=15672
 
-    # PostgreSQL/TimescaleDB Settings
-    POSTGRES_USER=admin
-    POSTGRES_PASSWORD=password
-    POSTGRES_DB=erp_data
-    POSTGRES_HOST=db
+   # PostgreSQL/TimescaleDB Settings
+   POSTGRES_USER=admin
+   POSTGRES_PASSWORD=password
+   POSTGRES_DB=erp_data
+   POSTGRES_HOST=db
 
-    # Nginx Port
-    NGINX_PORT=8080
-    ```
+   # Nginx Port
+   NGINX_PORT=8080
+   ```
 
-3.  **コンテナのビルドと起動:**
-    以下のコマンドで、全サービスの Docker イメージをビルドし、バックグラウンドで起動します。
+3. **コンテナのビルドと起動:**
+   以下のコマンドで、全サービスの Docker イメージをビルドし、バックグラウンドで起動します。
 
-    ```bash
-    docker compose up --build -d
-    ```
+   ```bash
+   docker compose up --build -d
+   ```
 
 ### 5.2 モバイルアプリ連携のための開発環境設定（WSL2 + Windows）
 
@@ -236,38 +259,38 @@ WSL2 は Windows とは別の仮想ネットワークを持つため、スマホ
 
 #### ステップ 1: 必要な IP アドレスを 2 つ調べる
 
-1.  **Windows の IP アドレスを確認:**
+1. **Windows の IP アドレスを確認:**
 
-    - Windows の**コマンドプロンプト**で`ipconfig`を実行し、「IPv4 アドレス」をメモします。（例: `192.168.128.151`）
+   - Windows の**コマンドプロンプト**で`ipconfig`を実行し、「IPv4 アドレス」をメモします。（例: `192.168.128.151`）
 
-2.  **WSL の IP アドレスを確認:**
+2. **WSL の IP アドレスを確認:**
 
-    - **WSL のターミナル**で`hostname -I`または`ip -4 a`を実行し、`eth0`の`inet`アドレスをメモします。（例: `172.26.232.13`）
+   - **WSL のターミナル**で`hostname -I`または`ip -4 a`を実行し、`eth0`の`inet`アドレスをメモします。（例: `172.26.232.13`）
 
 #### ステップ 2: ポートフォワーディングを設定する
 
 Windows に来た通信を WSL へ転送するルールを追加します。
 
-1.  \*\*PowerShell を「管理者として実行」\*\*します。
+1. \*\*PowerShell を「管理者として実行」\*\*します。
 
-2.  以下のコマンドの`<...>`部分を、ステップ 1 で調べた IP アドレスに置き換えて実行します。
+2. 以下のコマンドの`<...>`部分を、ステップ 1 で調べた IP アドレスに置き換えて実行します。
 
-    ```powershell
-    # 構文: netsh interface portproxy add v4tov4 listenport=<公開ポート> listenaddress=<WindowsのIP> connectport=<転送先ポート> connectaddress=<WSLのIP>
-    netsh interface portproxy add v4tov4 listenport=8080 listenaddress=192.168.128.151 connectport=8080 connectaddress=172.26.232.13
-    ```
+   ```powershell
+   # 構文: netsh interface portproxy add v4tov4 listenport=<公開ポート> listenaddress=<WindowsのIP> connectport=<転送先ポート> connectaddress=<WSLのIP>
+   netsh interface portproxy add v4tov4 listenport=8080 listenaddress=192.168.128.151 connectport=8080 connectaddress=172.26.232.13
+   ```
 
 #### ステップ 3: Windows Defender ファイアウォールの設定
 
 外部（スマホ）からの通信を許可するルールを追加します。
 
-1.  \*\*PowerShell を「管理者として実行」\*\*します。
+1. \*\*PowerShell を「管理者として実行」\*\*します。
 
-2.  以下のコマンドを実行し、ポート`8080`への受信（Inbound）を許可します。
+2. 以下のコマンドを実行し、ポート`8080`への受信（Inbound）を許可します。
 
-    ```powershell
-    New-NetFirewallRule -DisplayName "WSL Port 8080 Allow" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
-    ```
+   ```powershell
+   New-NetFirewallRule -DisplayName "WSL Port 8080 Allow" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+   ```
 
 これで、スマホアプリの`.env`ファイルに`SERVER_IP=<WindowsのIP>`と`SERVER_PORT=8080`を設定すれば、通信が可能になります。
 
@@ -371,18 +394,22 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 
 `collector`サービス単体の動作を、RabbitMQ と連携して確認します。
 
-1.  **必要なサービスを起動:**
-    ```bash
-    docker-compose up -d rabbitmq collector
-    ```
-2.  **テストスクリプトを実行:**
-    `collector`ディレクトリに移動し、依存パッケージをインストールしてからテストを実行します。
-    ```bash
-    cd collector
-    npm install
-    npm run test:standalone
-    ```
-3.  ターミナルに`✅ All tests passed successfully!`と表示されれば成功です。
+1. **必要なサービスを起動:**
+
+   ```bash
+   docker-compose up -d rabbitmq collector
+   ```
+
+2. **テストスクリプトを実行:**
+   `collector`ディレクトリに移動し、依存パッケージをインストールしてからテストを実行します。
+
+   ```bash
+   cd collector
+   npm install
+   npm run test:standalone
+   ```
+
+3. ターミナルに`✅ All tests passed successfully!`と表示されれば成功です。
 
 ### 6.2 エンドツーエンドテスト
 
