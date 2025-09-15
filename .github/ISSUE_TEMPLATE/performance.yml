@@ -1,13 +1,13 @@
 name: パフォーマンス問題
-description: パフォーマンスに関する問題を報告してください
-title: "[Performance]: "
-labels: ["performance"]
+description: パフォーマンスに関する問題はこちら
+title: '[Performance]: '
+labels: ['performance']
 assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        パフォーマンス問題の報告をありがとうございます。以下の項目にできるだけ詳しく記入してください。
+        発生している問題について、以下の項目にできるだけ詳しく記入してください。
 
   - type: textarea
     id: current_measurement
@@ -29,7 +29,7 @@ body:
   - type: textarea
     id: expected_performance
     attributes:
-      label: 期待値
+      label: 期待する状態
       description: 目標とするパフォーマンス値を記載してください
       placeholder: |
         - 応答時間: ○○ms以下
@@ -89,7 +89,7 @@ body:
   - type: textarea
     id: profiling_data
     attributes:
-      label: プロファイリング データ
+      label: 調査・プロファイリング結果
       description: プロファイリングツールの結果があれば添付してください
       placeholder: |
         - プロファイラー名: [e.g. cProfile, Node.js Inspector]

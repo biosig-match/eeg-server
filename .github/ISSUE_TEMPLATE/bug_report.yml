@@ -1,13 +1,13 @@
 name: バグ報告
-description: バグの報告をしてください
-title: "[Bug]: "
-labels: ["bug", "needs-triage"]
+description: バグの報告はこちら
+title: '[Bug]: '
+labels: ['bug', 'needs-triage']
 assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        バグ報告をありがとうございます。以下の項目にできるだけ詳しく記入してください。
+        バグの説明を以下の項目にできるだけ詳しく記入してください。
 
   - type: textarea
     id: summary

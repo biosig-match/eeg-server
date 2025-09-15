@@ -1,13 +1,13 @@
-name: メンテナンス・チョア
-description: メンテナンスやリファクタリングの作業を報告してください
-title: "[Chore]: "
-labels: ["chore"]
+name: メンテナンス/リファクタリング提案
+description: メンテナンスやリファクタリング提案はこちら
+title: '[Refactor]: '
+labels: ['refactor']
 assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        メンテナンス作業の提案をありがとうございます。以下の項目にできるだけ詳しく記入してください。
+        提案事項を以下の項目にできるだけ詳しく記入してください。
 
   - type: textarea
     id: purpose
@@ -21,7 +21,7 @@ body:
         - 開発効率の向上
         - セキュリティ対策
         - パフォーマンス改善の準備
-        など、なぜこの作業が必要なのかを説明してください
+        など
     validations:
       required: true
 

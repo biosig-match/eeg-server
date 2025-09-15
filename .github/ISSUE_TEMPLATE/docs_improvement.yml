@@ -1,18 +1,18 @@
 name: ドキュメント改善
-description: ドキュメントの改善提案をしてください
-title: "[Docs]: "
-labels: ["documentation"]
+description: ドキュメントの改善提案はこちら
+title: '[Docs]: '
+labels: ['documentation']
 assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        ドキュメント改善の提案をありがとうございます。以下の項目にできるだけ詳しく記入してください。
+        改善提案を以下の項目にできるだけ詳しく記入してください。
 
   - type: textarea
     id: target
     attributes:
-      label: 対象
+      label: 提案対象
       description: 改善したいドキュメントを具体的に指定してください
       placeholder: |
         - ファイル名: README.md, docs/api.md など
@@ -24,7 +24,7 @@ body:
   - type: textarea
     id: current_issue
     attributes:
-      label: 現在の問題
+      label: 問題
       description: 現在のドキュメントの問題点や不足している内容を説明してください
       placeholder: |
         - 情報が古い
@@ -54,7 +54,7 @@ body:
   - type: textarea
     id: expected_effect
     attributes:
-      label: 期待効果
+      label: 期待される効果
       description: この改善によって期待される効果を記載してください
       placeholder: |
         - ユーザーの理解度向上
@@ -102,16 +102,6 @@ body:
         - 関連するIssueやPR
         - スクリーンショット
         など
-
-  - type: checkboxes
-    id: contribution
-    attributes:
-      label: 貢献について
-      description: 以下から該当するものを選択してください
-      options:
-        - label: この改善を自分で実装することができます
-        - label: レビューやフィードバックで協力できます
-        - label: 提案のみで、実装は他の方にお任せします
 
   - type: checkboxes
     id: terms

@@ -1,13 +1,13 @@
 name: 機能要求
-description: 新機能の提案をしてください
-title: "[Feature]: "
-labels: ["enhancement", "needs-triage"]
+description: 新機能の提案はこちら
+title: '[Feature]: '
+labels: ['enhancement', 'needs-triage']
 assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        新機能の提案をありがとうございます。以下の項目にできるだけ詳しく記入してください。
+        提案事項を以下の項目にできるだけ詳しく記入してください。
 
   - type: textarea
     id: background

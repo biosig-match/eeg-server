@@ -1,19 +1,19 @@
-name: 劣化報告（Regression）
-description: 以前は動作していた機能が壊れた場合に報告してください
-title: "[Regression]: "
-labels: ["regression", "bug", "needs-triage"]
+name: 劣化報告
+description: 以前は動作していた機能が壊れた場合はこちら
+title: '[Regression]: '
+labels: ['regression', 'bug', 'needs-triage']
 assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        劣化（regression）報告をありがとうございます。以前は正常に動作していた機能が最近の変更により問題が発生した場合に使用してください。
+        劣化の説明を以下の項目にできるだけ詳しく記入してください。
 
   - type: textarea
     id: last_working_version
     attributes:
-      label: 直前の正常バージョン・時点
-      description: 最後に正常に動作していたバージョンや時点を記載してください
+      label: 直前の正常バージョン・タイミング
+      description: 最後に正常に動作していたバージョンやいつまで動作していたかを記載してください
       placeholder: |
         - バージョン: v1.2.3
         - コミットハッシュ: abc123def
@@ -31,8 +31,8 @@ body:
       label: 影響した変更（PR/コミット等）
       description: 問題を引き起こしたと思われる変更があれば記載してください
       placeholder: |
-        - PR番号: #123
-        - コミットハッシュ: def456ghi
+        - PR番号: #
+        - コミットハッシュ: abc123def
         - 変更内容: データベース接続の変更
         - マージ日時: 2024年1月20日
 
@@ -42,7 +42,7 @@ body:
     id: reproduction_steps
     attributes:
       label: 再現手順
-      description: 劣化を再現するための手順を順番に記載してください
+      description: 劣化を再現するための手順を記載してください
       placeholder: |
         1. アプリケーションを起動
         2. '...'ページにアクセス
@@ -59,7 +59,7 @@ body:
       label: 期待される動作（以前の正常動作）
       description: 以前の正常バージョンではどのように動作していたかを記載してください
       placeholder: |
-        以前のバージョンでは正常に...
+        以前のバージョンでは...
         - 期待される結果や画面表示
         - 正常な処理フロー
         - 得られるべき出力
