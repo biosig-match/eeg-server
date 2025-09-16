@@ -30,8 +30,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS events (
     id BIGSERIAL PRIMARY KEY,
     session_id VARCHAR(255) NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    onset DOUBLE PRECISION NOT NULL, -- Onset time in seconds from the session start
-    duration DOUBLE PRECISION NOT NULL,
     description TEXT,
     value VARCHAR(255) -- e.g., 'stimulus/left', 't-posed'
 );
