@@ -79,7 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_experiment ON sessions (experiment_id);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events (session_id);
 CREATE INDEX IF NOT EXISTS idx_raw_data_user_time ON raw_data_objects (user_id, start_time DESC);
-CREATE INDEX IF NOT EXISTS idx_raw_data_time_range ON raw_data_objects USING gist (tsrange(start_time, end_time)); -- For faster time-based lookups
+CREATE INDEX IF NOT EXISTS idx_raw_data_time_range ON raw_data_objects USING gist (tstzrange(start_time, end_time)); -- For faster time-based lookups
 CREATE INDEX IF NOT EXISTS idx_session_links_object ON session_object_links (object_id);
 CREATE INDEX IF NOT EXISTS idx_images_user ON images (user_id);
 CREATE INDEX IF NOT EXISTS idx_images_session ON images (session_id);

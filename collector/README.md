@@ -26,7 +26,7 @@ cd ..
 
 docker-compose up -d rabbitmq collector
 
-docker ps コマンドを実行し、erp_rabbitmq と erp_collector のコンテナが Up 状態で稼働していることを確認してください。
+docker ps コマンドを実行し、eeg_rabbitmq と eeg_collector のコンテナが Up 状態で稼働していることを確認してください。
 
 3. テストの実行
    collector ディレクトリに移動し、テストスクリプトを実行します。

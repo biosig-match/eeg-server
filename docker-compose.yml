@@ -1,93 +1,157 @@
 services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
-    container_name: erp_rabbitmq # 単一コンテナなので名前固定OK
+    container_name: eeg_rabbitmq
+    ports:
+      - '${RABBITMQ_MGMT_PORT}:15672'
+      - '5672:5672'
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
-    ports:
-      - '${RABBITMQ_MGMT_PORT}:15672' # Management UI
-      - '5672:5672'
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - eeg-network
 
   db:
     image: timescale/timescaledb-ha:pg16-ts2.14
-    container_name: erp_db # 単一コンテナなので名前固定OK
+    container_name: eeg_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - '5432:5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - eeg-network
+
+  minio:
+    image: minio/minio
+    container_name: eeg_minio
+    ports:
+      - '${MINIO_PORT}:9000'
+      - '${MINIO_CONSOLE_PORT}:9001'
+    volumes:
+      - minio_data:/data
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    networks:
+      - eeg-network
+
+  create-buckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    environment:
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}; do
+        echo '... waiting for minio to be ready ...' && sleep 2;
+      done;
+      echo '✅ MinIO is ready. Alias set.';
+      /usr/bin/mc mb local/${MINIO_RAW_DATA_BUCKET} --ignore-existing;
+      /usr/bin/mc mb local/${MINIO_MEDIA_BUCKET} --ignore-existing;
+      echo '✅ Buckets are created.';
+      exit 0;
+      "
+    networks:
+      - eeg-network
 
   collector:
     build: ./collector
-    container_name: erp_collector # 単一コンテナなので名前固定OK
+    container_name: eeg_collector
     restart: unless-stopped
-    ports: # ★★★ この3行を追加 ★★★
-      - "3000:3000"
     depends_on:
       rabbitmq:
         condition: service_healthy
-    environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+    networks:
+      - eeg-network
 
   processor:
     build: ./processor
-    # container_name: erp_processor  <-- ★★★ この行を削除しました ★★★
     restart: unless-stopped
     depends_on:
+      create-buckets:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
       db:
         condition: service_healthy
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
-    deploy:
-      replicas: 2 # 複数起動するため、コンテナ名はDockerに自動採番させる
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - MINIO_ENDPOINT=minio
+      - MINIO_PORT=9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_USE_SSL=false
+      - MINIO_RAW_DATA_BUCKET=${MINIO_RAW_DATA_BUCKET}
+    networks:
+      - eeg-network
 
-  bids_manager:
-    build: ./bids_manager
-    container_name: erp_bids_manager # 単一コンテナなので名前固定OK
+  media_processor:
+    build: ./media_processor
     restart: unless-stopped
     depends_on:
-      - db
+      create-buckets:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     environment:
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
-    volumes:
-      - ./bids_output:/app/bids_output
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - MINIO_ENDPOINT=minio
+      - MINIO_PORT=9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_USE_SSL=false
+      - MINIO_MEDIA_BUCKET=${MINIO_MEDIA_BUCKET}
+    networks:
+      - eeg-network
 
   realtime_analyzer:
     build: ./realtime_analyzer
-    container_name: erp_realtime_analyzer # 単一コンてなので名前固定OK
+    container_name: eeg_realtime_analyzer
     restart: unless-stopped
     depends_on:
-      - rabbitmq
-    environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - eeg-network
 
   ingress:
     build: ./nginx
-    container_name: erp_ingress # 単一コンテナなので名前固定OK
+    container_name: eeg_ingress
+    restart: unless-stopped
     ports:
       - '${NGINX_PORT}:80'
     depends_on:
       - collector
-      - bids_manager
       - realtime_analyzer
+    networks:
+      - eeg-network
 
 volumes:
   pg_data:
+  minio_data:
+
+networks:
+  eeg-network:
+    driver: bridge

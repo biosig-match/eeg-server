@@ -13,7 +13,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from mne_bids import BIDSPath, write_raw_bids
 
 app = Flask(__name__)
-DATABASE_URL = os.getenv("DATABASE_URL", "postgres://admin:password@db:5432/erp_data")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgres://admin:password@db:5432/eeg_data")
 BIDS_OUTPUT_DIR = "/app/bids_output"
 executor = ThreadPoolExecutor(max_workers=2)
 export_tasks = {}

@@ -11,6 +11,8 @@
 
 # Node
 collector/node_modules/
+processor/node_modules/
+media_processor/node_modules/
 
 # Project outputs
 bids_output/
@@ -21,6 +23,7 @@ bids_output/
 !.vscode/extensions.json
 
 # OS
+.env
 .DS_Store
 .venv/
 bench-results/

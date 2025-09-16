@@ -116,8 +116,8 @@ if $COMPOSE_UP; then
   fi
 
   # Wait for core infra health (only services that define healthchecks)
-  wait_container_healthy erp_rabbitmq 120 || true
-  wait_container_healthy erp_db 120 || true
+  wait_container_healthy eeg_rabbitmq 120 || true
+  wait_container_healthy eeg_db 120 || true
 
   # Wait for ingress health endpoint to be served via collector
   : "${NGINX_PORT:=8080}"
