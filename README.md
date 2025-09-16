@@ -23,13 +23,13 @@
 
 | サービス              | コンテナ名               | 役割                                                                                                                                                      |
 | :-------------------- | :----------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Ingress**           | `erp_ingress`            | **API ゲートウェイ (Nginx)**。HTTP リクエストを受け付け、適切なサービスに振り分ける。                                                                     |
-| **Collector**         | `erp_collector`          | **データ受信 API (Node.js)**。HTTP 経由でセンサーデータとメディアファイルを受信し、一切の処理をせず即座に RabbitMQ へ転送する。                           |
+| **Ingress**           | `eeg_ingress`            | **API ゲートウェイ (Nginx)**。HTTP リクエストを受け付け、適切なサービスに振り分ける。                                                                     |
+| **Collector**         | `eeg_collector`          | **データ受信 API (Node.js)**。HTTP 経由でセンサーデータとメディアファイルを受信し、一切の処理をせず即座に RabbitMQ へ転送する。                           |
 | **Processor**         | `eeg-server-processor-*` | **データ処理ワーカー (Python)**。RabbitMQ から生データを受信し、解凍・パース・タイムスタンプ計算を行い、PostgreSQL に格納する。2 つのレプリカで並列実行。 |
-| **BIDS Manager**      | `erp_bids_manager`       | **実験管理・BIDS エクスポート API (Python/Flask)**。実験の開始/終了、イベント CSV の登録、BIDS エクスポートの非同期実行を管理する。                       |
-| **Realtime Analyzer** | `erp_realtime_analyzer`  | **リアルタイム解析 API (Python/Flask)**。処理済みの脳波データを購読し、PSD や同期度を計算してアプリに結果を提供する。                                     |
-| **Database**          | `erp_db`                 | **PostgreSQL データベース (TimescaleDB 拡張)**。実験メタデータ、セッション情報、イベント情報、メディアファイル情報を永続化する。                          |
-| **Message Queue**     | `erp_rabbitmq`           | **メッセージブローカー (RabbitMQ)**。サービス間のデータの受け渡しを非同期で行い、システム全体の安定性を担保する。                                         |
+| **BIDS Manager**      | `eeg_bids_manager`       | **実験管理・BIDS エクスポート API (Python/Flask)**。実験の開始/終了、イベント CSV の登録、BIDS エクスポートの非同期実行を管理する。                       |
+| **Realtime Analyzer** | `eeg_realtime_analyzer`  | **リアルタイム解析 API (Python/Flask)**。処理済みの脳波データを購読し、PSD や同期度を計算してアプリに結果を提供する。                                     |
+| **Database**          | `eeg_db`                 | **PostgreSQL データベース (TimescaleDB 拡張)**。実験メタデータ、セッション情報、イベント情報、メディアファイル情報を永続化する。                          |
+| **Message Queue**     | `eeg_rabbitmq`           | **メッセージブローカー (RabbitMQ)**。サービス間のデータの受け渡しを非同期で行い、システム全体の安定性を担保する。                                         |
 
 ## 3\. データフローとスキーマ詳細 (Data Flow & Schema Details)
 
@@ -235,7 +235,7 @@ Ingress (Nginx) は以下のエンドポイントを公開します。
    # PostgreSQL/TimescaleDB Settings
    POSTGRES_USER=admin
    POSTGRES_PASSWORD=password
-   POSTGRES_DB=erp_data
+   POSTGRES_DB=eeg_data
    POSTGRES_HOST=db
 
    # Nginx Port
@@ -435,7 +435,7 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
      bash tools/dev/run_e2e_test.sh --compose --no-build
      ```
 
-     スクリプトは RabbitMQ/DB のヘルス（container_name: `erp_rabbitmq`, `erp_db`）を待機し、
+     スクリプトは RabbitMQ/DB のヘルス（container_name: `eeg_rabbitmq`, `eeg_db`）を待機し、
      さらに `http://localhost:${NGINX_PORT}/api/v1/health`（デフォルト 8080）へ到達可能になるまで待機します。
      `.env` のポート設定を読み込みます。
 
