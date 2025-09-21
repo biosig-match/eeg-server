@@ -145,6 +145,87 @@ services:
     depends_on:
       - collector
       - realtime_analyzer
+      - session_manager
+      - auth_manager
+    networks:
+      - eeg-network
+
+  session_manager:
+    build: ./session_manager
+    container_name: eeg_session_manager
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      create-buckets:
+        condition: service_completed_successfully
+      auth_manager:
+        condition: service_started
+    environment:
+      - PORT=3000
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_PORT=${MINIO_PORT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_USE_SSL=${MINIO_USE_SSL}
+      - MINIO_MEDIA_BUCKET=${MINIO_MEDIA_BUCKET}
+      - DATA_LINKER_QUEUE=${DATA_LINKER_QUEUE}
+      - STIMULUS_ASSET_QUEUE=${STIMULUS_ASSET_QUEUE}
+      - AUTH_MANAGER_URL=${AUTH_MANAGER_URL}
+    networks:
+      - eeg-network
+
+  stimulus_asset_processor:
+    build: ./stimulus_asset_processor
+    container_name: eeg_stimulus_asset_processor
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      create-buckets:
+        condition: service_completed_successfully
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_PORT=${MINIO_PORT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_USE_SSL=${MINIO_USE_SSL}
+      - MINIO_MEDIA_BUCKET=${MINIO_MEDIA_BUCKET}
+      - STIMULUS_ASSET_QUEUE=${STIMULUS_ASSET_QUEUE}
+    networks:
+      - eeg-network
+
+  auth_manager:
+    build: ./auth_manager
+    container_name: eeg_auth_manager
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - PORT=3000
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
     networks:
       - eeg-network
 

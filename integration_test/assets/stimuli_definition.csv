@@ -1,0 +1,4 @@
+trial_type,file_name,description
+target,test_stimulus_1.png,"A test target image"
+nontarget,test_stimulus_2.png,"A test non-target image"
+

@@ -1,0 +1,26 @@
+{
+  "name": "session_manager",
+  "version": "1.0.0",
+  "description": "Session Manager service for the EEG platform",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch --env-file=../.env run src/index.ts",
+    "test:e2e": "bun --env-file=../.env.test run test/standalone_test.ts"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.2.2",
+    "amqplib": "^0.10.4",
+    "csv-parse": "^5.5.6",
+    "hono": "^4.4.11",
+    "minio": "^8.0.0",
+    "pg": "^8.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.5",
+    "@types/pg": "^8.11.6",
+    "bun-types": "latest",
+    "dotenv": "^16.4.5",
+    "typescript": "^5.0.0"
+  }
+}

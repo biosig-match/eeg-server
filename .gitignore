@@ -13,6 +13,12 @@
 collector/node_modules/
 processor/node_modules/
 media_processor/node_modules/
+session_manager/node_modules/
+test_runner/node_modules
+session_manager/test/dummy_assets
+auth_manager/node_modules/
+stimulus_asset_processor/node_modules/
+integration_test/node_modules/
 
 # Project outputs
 bids_output/

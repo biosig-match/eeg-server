@@ -1,0 +1,22 @@
+{
+  "name": "stimulus-asset-processor",
+  "version": "1.0.0",
+  "description": "A worker service to process and persist stimulus assets asynchronously.",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch --env-file=../.env run src/index.ts"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "hono": "^4.4.11",
+    "minio": "^8.0.0",
+    "pg": "^8.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.5",
+    "@types/pg": "^8.11.6",
+    "bun-types": "latest",
+    "typescript": "^5.0.0"
+  }
+}

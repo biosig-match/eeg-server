@@ -1,0 +1,11 @@
+{
+  "name": "eeg-platform-integration-test",
+  "version": "1.0.0",
+  "description": "Integration tests for the EEG platform services.",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}
