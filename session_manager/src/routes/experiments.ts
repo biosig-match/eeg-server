@@ -62,12 +62,7 @@ experimentsRouter.get('/', async (c) => {
 
 // POST /:experiment_id/stimuli - 実験で使用する刺激アセットの登録
 experimentsRouter.post('/:experiment_id/stimuli', requireAuth('owner'), async (c) => {
-  // ▼▼▼ ADDED: Logging ▼▼▼
-  console.log(`\n--- [Experiments /:experiment_id/stimuli] ---`);
-  console.log(
-    `[Experiments Route] Handler reached for experiment_id: ${c.req.param('experiment_id')}`,
-  );
-  // ▲▲▲ ADDED ▲▲▲
+
   const { experiment_id } = c.req.param();
   const formData = await c.req.formData();
   const csvFile = formData.get('stimuli_definition_csv') as File;
