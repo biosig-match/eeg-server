@@ -10,7 +10,7 @@ export const sessionEndMetadataSchema = z.object({
   device_id: z.string().min(1),
   start_time: z.string().datetime({ message: 'Invalid ISO 8601 datetime format for start_time.' }),
   end_time: z.string().datetime({ message: 'Invalid ISO 8601 datetime format for end_time.' }),
-  session_type: z.enum(['main_integrated', 'main_external']),
+  session_type: z.enum(['main_integrated', 'main_external', 'calibration']),
 });
 
 /**

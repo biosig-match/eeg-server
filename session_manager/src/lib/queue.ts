@@ -41,6 +41,7 @@ export async function initializeQueue(): Promise<void> {
     });
 
     await amqpChannel.assertQueue(config.DATA_LINKER_QUEUE, { durable: true });
+    await amqpChannel.assertQueue(config.STIMULUS_ASSET_QUEUE, { durable: true });
   } catch (error) {
     console.error('❌ [RabbitMQ] Failed to connect during initialization.', error);
     process.exit(1);

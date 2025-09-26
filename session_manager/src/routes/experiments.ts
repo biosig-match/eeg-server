@@ -49,11 +49,30 @@ experimentsRouter.post('/', zValidator('json', createExperimentSchema), async (c
 
 // GET /api/v1/experiments - 実験一覧の取得
 experimentsRouter.get('/', async (c) => {
+  const userId = c.req.header('X-User-Id');
+  if (!userId) {
+    return c.json({ error: 'X-User-Id header is required.' }, 400);
+  }
+
   try {
-    const result = await dbPool.query(
-      'SELECT experiment_id, name, description FROM experiments ORDER BY experiment_id DESC',
+    // ユーザーが参加している実験IDのリストをDBから直接取得
+    const participantResult = await dbPool.query(
+      'SELECT experiment_id FROM experiment_participants WHERE user_id = $1',
+      [userId],
     );
-    return c.json(result.rows);
+
+    if (participantResult.rows.length === 0) {
+      return c.json([]); // 参加している実験がない場合は空配列を返す
+    }
+
+    const experimentIds = participantResult.rows.map((row) => row.experiment_id); // 取得したIDリストを元に実験の詳細情報を取得
+
+    const experimentsResult = await dbPool.query(
+      'SELECT experiment_id, name, description FROM experiments WHERE experiment_id = ANY($1::uuid[]) ORDER BY name',
+      [experimentIds],
+    );
+
+    return c.json(experimentsResult.rows);
   } catch (error) {
     console.error('Failed to get experiments:', error);
     return c.json({ error: 'Database error while fetching experiments' }, 500);
@@ -62,7 +81,6 @@ experimentsRouter.get('/', async (c) => {
 
 // POST /:experiment_id/stimuli - 実験で使用する刺激アセットの登録
 experimentsRouter.post('/:experiment_id/stimuli', requireAuth('owner'), async (c) => {
-
   const { experiment_id } = c.req.param();
   const formData = await c.req.formData();
   const csvFile = formData.get('stimuli_definition_csv') as File;
