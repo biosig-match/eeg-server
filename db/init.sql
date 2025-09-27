@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ,
     session_type VARCHAR(50), -- e.g., 'calibration', 'main_integrated', 'main_external'
-    link_status VARCHAR(50) NOT NULL DEFAULT 'pending' -- e.g., pending, processing, completed, failed
+    link_status VARCHAR(50) NOT NULL DEFAULT 'pending', -- e.g., pending, processing, completed, failed
+    clock_offset_info JSONB
 );
 
 -- Table for managing stimuli associated with an experiment (The "Plan")
@@ -66,8 +67,10 @@ CREATE TABLE IF NOT EXISTS raw_data_objects (
     object_id VARCHAR(512) PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,
     device_id VARCHAR(255),
-    start_time TIMESTAMPTZ NOT NULL,
-    end_time TIMESTAMPTZ NOT NULL
+    start_time TIMESTAMPTZ, -- Corrected UTC start time, filled by DataLinker
+    end_time TIMESTAMPTZ,   -- Corrected UTC end time, filled by DataLinker
+    start_time_device BIGINT,
+    end_time_device BIGINT
 );
 
 -- Junction table to link sessions and raw_data_objects
@@ -103,8 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_experiment ON sessions (experiment_id);
 CREATE INDEX IF NOT EXISTS idx_stimuli_experiment ON experiment_stimuli (experiment_id);
 CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events (session_id);
 CREATE INDEX IF NOT EXISTS idx_session_events_stimulus ON session_events (stimulus_id);
-CREATE INDEX IF NOT EXISTS idx_raw_data_user_time ON raw_data_objects (user_id, start_time DESC);
-CREATE INDEX IF NOT EXISTS idx_raw_data_time_range ON raw_data_objects USING gist (tstzrange(start_time, end_time));
+CREATE INDEX IF NOT EXISTS idx_raw_data_user_device_time ON raw_data_objects (user_id, start_time_device DESC);
 CREATE INDEX IF NOT EXISTS idx_session_links_object ON session_object_links (object_id);
 CREATE INDEX IF NOT EXISTS idx_images_user ON images (user_id);
 CREATE INDEX IF NOT EXISTS idx_images_session ON images (session_id);

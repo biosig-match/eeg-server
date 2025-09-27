@@ -11,6 +11,12 @@ export const sessionEndMetadataSchema = z.object({
   start_time: z.string().datetime({ message: 'Invalid ISO 8601 datetime format for start_time.' }),
   end_time: z.string().datetime({ message: 'Invalid ISO 8601 datetime format for end_time.' }),
   session_type: z.enum(['main_integrated', 'main_external', 'calibration']),
+  clock_offset_info: z
+    .object({
+      offset_ms_avg: z.number(),
+      rtt_ms_avg: z.number(),
+    })
+    .optional(),
 });
 
 /**

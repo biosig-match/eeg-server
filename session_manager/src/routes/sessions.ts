@@ -44,28 +44,27 @@ sessionsRouter.post(
 );
 
 sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
-  console.log(`\n--- [Sessions /end] ---`);
-  console.log(`[Sessions Route /end] Handler reached. Processing form data...`);
   const formData = await c.req.formData();
   const metadataJson = formData.get('metadata') as string;
   const eventsLogCsvFile = formData.get('events_log_csv') as File;
-
-  console.log(`[Sessions Route /end] Metadata (raw string): "${metadataJson}"`);
-  console.log(`[Sessions Route /end] Events Log File present: ${!!eventsLogCsvFile}`);
 
   if (!metadataJson) {
     return c.json({ error: 'metadata field is required.' }, 400);
   }
   const dbClient = await dbPool.connect();
   try {
-    console.log('[Sessions Route /end] Parsing metadata JSON...');
     const metadata = sessionEndMetadataSchema.parse(JSON.parse(metadataJson));
-    console.log('[Sessions Route /end] Successfully parsed metadata:', metadata);
 
     await dbClient.query('BEGIN');
 
-    const updateQuery = 'UPDATE sessions SET end_time = $1, device_id = $2 WHERE session_id = $3';
-    await dbClient.query(updateQuery, [metadata.end_time, metadata.device_id, metadata.session_id]);
+    const updateQuery =
+      'UPDATE sessions SET end_time = $1, device_id = $2, clock_offset_info = $3 WHERE session_id = $4';
+    await dbClient.query(updateQuery, [
+      metadata.end_time,
+      metadata.device_id,
+      metadata.clock_offset_info ? JSON.stringify(metadata.clock_offset_info) : null,
+      metadata.session_id,
+    ]);
 
     if (eventsLogCsvFile) {
       await dbClient.query('DELETE FROM session_events WHERE session_id = $1', [
@@ -112,6 +111,7 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
       experiment_id: metadata.experiment_id,
       session_start_utc: metadata.start_time,
       session_end_utc: metadata.end_time,
+      clock_offset_info: metadata.clock_offset_info,
     };
     try {
       getAmqpChannel().sendToQueue(

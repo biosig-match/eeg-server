@@ -300,6 +300,10 @@ describe('E2E Test for Core Service Integration', () => {
           start_time: new Date(Date.now() - 10000).toISOString(),
           end_time: new Date().toISOString(),
           session_type: 'main_integrated',
+          clock_offset_info: {
+            offset_ms_avg: -150.5,
+            rtt_ms_avg: 45.2,
+          },
         }),
       );
       formDataEnd.append('events_log_csv', Bun.file(path.join(ASSETS_DIR, 'events_log.csv')));
@@ -344,6 +348,10 @@ describe('E2E Test for Core Service Integration', () => {
           start_time: new Date(Date.now() - 5000).toISOString(),
           end_time: new Date().toISOString(),
           session_type: 'calibration',
+          clock_offset_info: {
+            offset_ms_avg: -152.1,
+            rtt_ms_avg: 48.9,
+          },
         }),
       );
       const endCalSessionResponse = await fetch(`${BASE_URL}/sessions/end`, {
