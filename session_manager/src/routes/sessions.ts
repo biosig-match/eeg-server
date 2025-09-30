@@ -66,8 +66,6 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
       metadata.session_id,
     ]);
 
-    // ★★★ 修正箇所 ★★★
-    // セッションタイプを取得して、後続の処理で分岐させる
     if (sessionUpdateResult.rowCount === 0) {
       throw new Error(`Session with ID ${metadata.session_id} not found for update.`);
     }
@@ -86,22 +84,23 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
         let stimulusId: number | null = null;
         let calibrationItemId: number | null = null;
 
-        if (row.stim_file && row.stim_file !== 'n/a') {
-          // ★★★ 修正箇所 ★★★
-          // セッションタイプに応じて問い合わせるテーブルを変更
+        // ### <<< 修正点 (BUG FIX) >>> ###
+        // CSVの `file_name` を参照するように修正 (stim_file -> file_name)
+        if (row.file_name && row.file_name !== 'n/a') {
           if (sessionType === 'calibration') {
+            // ### <<< 修正点 (BUG FIX) >>> ###
+            // calibration_itemsはグローバルなテーブルなので、experiment_idで絞り込まない
             const calItemResult = await dbClient.query(
-              'SELECT item_id FROM calibration_items WHERE file_name = $1 AND experiment_id = $2',
-              [row.stim_file, metadata.experiment_id],
+              'SELECT item_id FROM calibration_items WHERE file_name = $1',
+              [row.file_name],
             );
             if (calItemResult.rowCount > 0) {
               calibrationItemId = calItemResult.rows[0].item_id;
             }
           } else {
-            // mainタスクの場合
             const stimulusResult = await dbClient.query(
               'SELECT stimulus_id FROM experiment_stimuli WHERE file_name = $1 AND experiment_id = $2',
-              [row.stim_file, metadata.experiment_id],
+              [row.file_name, metadata.experiment_id],
             );
             if (stimulusResult.rowCount > 0) {
               stimulusId = stimulusResult.rows[0].stimulus_id;
@@ -109,8 +108,6 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
           }
         }
 
-        // ★★★ 修正箇所 ★★★
-        // 挿入するカラムを動的に変更
         const insertEventQuery =
           'INSERT INTO session_events (session_id, stimulus_id, calibration_item_id, onset, duration, trial_type, description, value) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)';
         await dbClient.query(insertEventQuery, [
@@ -129,7 +126,6 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
 
     const jobPayload: DataLinkerJobPayload = {
       session_id: metadata.session_id,
-      // 以下のデータはdata_linker側でDBから再取得するため、ここでは必須ではない
       user_id: metadata.user_id,
       experiment_id: metadata.experiment_id,
       session_start_utc: metadata.start_time,

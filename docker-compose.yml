@@ -200,6 +200,9 @@ services:
       - DATA_LINKER_QUEUE=${DATA_LINKER_QUEUE}
       - STIMULUS_ASSET_QUEUE=${STIMULUS_ASSET_QUEUE}
       - AUTH_MANAGER_URL=${AUTH_MANAGER_URL}
+      # ### <<< 修正点 >>> ###
+      # BIDS ExporterサービスのURLを環境変数として渡す
+      - BIDS_EXPORTER_URL=${BIDS_EXPORTER_URL}
     networks:
       - eeg-network
 

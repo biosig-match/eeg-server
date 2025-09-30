@@ -10,7 +10,11 @@ CREATE TABLE IF NOT EXISTS experiments (
     experiment_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    password_hash VARCHAR(255) -- Password for joining the experiment
+    password_hash VARCHAR(255), -- Password for joining the experiment
+    
+    -- ### <<< 修正点 >>> ###
+    -- 実験の刺激提示順を制御するカラムを追加
+    presentation_order VARCHAR(50) NOT NULL DEFAULT 'random' CHECK (presentation_order IN ('sequential', 'random'))
 );
 
 -- Table for managing participants and their roles in an experiment.
@@ -31,7 +35,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     device_id VARCHAR(255),
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ,
-    session_type VARCHAR(50), -- e.g., 'calibration', 'main_integrated', 'main_external'
+    session_type VARCHAR(50), -- e.g., 'calibration', 'main_external'
     link_status VARCHAR(50) NOT NULL DEFAULT 'pending', -- e.g., pending, processing, completed, failed
     clock_offset_info JSONB,
     event_correction_status VARCHAR(50) NOT NULL DEFAULT 'pending'

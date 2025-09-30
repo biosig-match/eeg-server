@@ -12,7 +12,7 @@ export const experimentsRouter = new Hono();
 
 // POST /api/v1/experiments - 新規実験の作成
 experimentsRouter.post('/', zValidator('json', createExperimentSchema), async (c) => {
-  const { name, description, password } = c.req.valid('json');
+  const { name, description, password, presentation_order } = c.req.valid('json');
   const creatorId = c.req.header('X-User-Id');
   if (!creatorId) {
     return c.json({ error: 'X-User-Id header is required to create an experiment.' }, 400);
@@ -25,8 +25,8 @@ experimentsRouter.post('/', zValidator('json', createExperimentSchema), async (c
     const passwordHash = password ? await Bun.password.hash(password) : null;
 
     const experimentResult = await dbClient.query(
-      'INSERT INTO experiments (name, description, password_hash) VALUES ($1, $2, $3) RETURNING experiment_id',
-      [name, description || null, passwordHash],
+      'INSERT INTO experiments (name, description, password_hash, presentation_order) VALUES ($1, $2, $3, $4) RETURNING experiment_id',
+      [name, description || null, passwordHash, presentation_order],
     );
     const newExperimentId = experimentResult.rows[0].experiment_id;
 
@@ -37,7 +37,7 @@ experimentsRouter.post('/', zValidator('json', createExperimentSchema), async (c
 
     await dbClient.query('COMMIT');
 
-    return c.json({ experiment_id: newExperimentId, name, description }, 201);
+    return c.json({ experiment_id: newExperimentId, name, description, presentation_order }, 201);
   } catch (error) {
     await dbClient.query('ROLLBACK');
     console.error('Failed to create experiment:', error);
@@ -55,20 +55,19 @@ experimentsRouter.get('/', async (c) => {
   }
 
   try {
-    // ユーザーが参加している実験IDのリストをDBから直接取得
     const participantResult = await dbPool.query(
       'SELECT experiment_id FROM experiment_participants WHERE user_id = $1',
       [userId],
     );
 
     if (participantResult.rows.length === 0) {
-      return c.json([]); // 参加している実験がない場合は空配列を返す
+      return c.json([]);
     }
 
-    const experimentIds = participantResult.rows.map((row) => row.experiment_id); // 取得したIDリストを元に実験の詳細情報を取得
+    const experimentIds = participantResult.rows.map((row) => row.experiment_id);
 
     const experimentsResult = await dbPool.query(
-      'SELECT experiment_id, name, description FROM experiments WHERE experiment_id = ANY($1::uuid[]) ORDER BY name',
+      'SELECT experiment_id, name, description, presentation_order FROM experiments WHERE experiment_id = ANY($1::uuid[]) ORDER BY name',
       [experimentIds],
     );
 
@@ -139,7 +138,8 @@ experimentsRouter.post('/:experiment_id/stimuli', requireAuth('owner'), async (c
   }
 });
 
-experimentsRouter.get('/:experiment_id/stimuli', requireAuth('owner'), async (c) => {
+// GET /:experiment_id/stimuli - 実験で使用する刺激アセットの一覧を取得
+experimentsRouter.get('/:experiment_id/stimuli', requireAuth('participant'), async (c) => {
   const { experiment_id } = c.req.param();
   try {
     const result = await dbPool.query(
@@ -150,5 +150,38 @@ experimentsRouter.get('/:experiment_id/stimuli', requireAuth('owner'), async (c)
   } catch (error) {
     console.error('Failed to get stimuli for experiment:', error);
     return c.json({ error: 'Database error while fetching stimuli' }, 500);
+  }
+});
+
+// BIDSエクスポートを開始するためのエンドポイント
+experimentsRouter.post('/:experiment_id/export', requireAuth('owner'), async (c) => {
+  const { experiment_id } = c.req.param();
+  const userId = c.req.header('X-User-Id');
+
+  try {
+    const exportUrl = new URL(
+      `/api/v1/experiments/${experiment_id}/export`,
+      config.BIDS_EXPORTER_URL,
+    );
+
+    const response = await fetch(exportUrl.toString(), {
+      method: 'POST',
+      headers: {
+        'X-User-Id': userId!,
+      },
+    });
+
+    // ### <<< 修正点 >>> ###
+    // response.ok で成功・失敗を判定し、どちらの場合も
+    // 内部サービスからのレスポンスボディとステータスコードをそのまま転送する
+    const responseBody = await response.json().catch(() => ({
+      error: 'Upstream service returned a non-JSON or empty response.',
+    }));
+
+    // `response.status as any` を使ってTypeScriptのエラーを解消
+    return c.json(responseBody, response.status as any);
+  } catch (error) {
+    console.error('Failed to forward request to BIDS exporter:', error);
+    return c.json({ error: 'Service communication error' }, 503);
   }
 });
