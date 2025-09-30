@@ -15,17 +15,16 @@ export const minioClient = new MinioClient({
  */
 export async function ensureMinioBucket(): Promise<void> {
   try {
-    const bucketExists = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET);
+    const bucketExists = await minioClient.bucketExists(config.MINIO_RAW_DATA_BUCKET);
     if (!bucketExists) {
-      console.warn(`[MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" does not exist. Creating...`);
-      await minioClient.makeBucket(config.MINIO_MEDIA_BUCKET);
-      console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" created successfully.`);
+      console.warn(`[MinIO] Bucket "${config.MINIO_RAW_DATA_BUCKET}" does not exist. Creating...`);
+      await minioClient.makeBucket(config.MINIO_RAW_DATA_BUCKET);
+      console.log(`✅ [MinIO] Bucket "${config.MINIO_RAW_DATA_BUCKET}" created successfully.`);
     } else {
-      console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" is ready.`);
+      console.log(`✅ [MinIO] Bucket "${config.MINIO_RAW_DATA_BUCKET}" is ready.`);
     }
   } catch (error) {
     console.error('❌ [MinIO] Failed to ensure bucket exists.', error);
-    // 起動時に失敗した場合はサービスを停止させる
     throw error;
   }
 }

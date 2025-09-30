@@ -1,0 +1,4 @@
+onset,duration,trial_type,value,stim_file
+2.0,0.5,main_stim,1,product_A.jpg
+4.0,0.5,main_stim,2,product_B.jpg
+6.0,0.5,main_stim,3,product_C.jpg

@@ -58,13 +58,20 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
     await dbClient.query('BEGIN');
 
     const updateQuery =
-      'UPDATE sessions SET end_time = $1, device_id = $2, clock_offset_info = $3 WHERE session_id = $4';
-    await dbClient.query(updateQuery, [
+      'UPDATE sessions SET end_time = $1, device_id = $2, clock_offset_info = $3 WHERE session_id = $4 RETURNING session_type';
+    const sessionUpdateResult = await dbClient.query(updateQuery, [
       metadata.end_time,
       metadata.device_id,
       metadata.clock_offset_info ? JSON.stringify(metadata.clock_offset_info) : null,
       metadata.session_id,
     ]);
+
+    // ★★★ 修正箇所 ★★★
+    // セッションタイプを取得して、後続の処理で分岐させる
+    if (sessionUpdateResult.rowCount === 0) {
+      throw new Error(`Session with ID ${metadata.session_id} not found for update.`);
+    }
+    const sessionType = sessionUpdateResult.rows[0].session_type;
 
     if (eventsLogCsvFile) {
       await dbClient.query('DELETE FROM session_events WHERE session_id = $1', [
@@ -75,26 +82,41 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
       const records: unknown[] = csvParse(csvContent, { columns: true, skip_empty_lines: true });
       const parsedCsv = z.array(eventLogCsvRowSchema).parse(records);
 
-      const stimuliResult = await dbClient.query(
-        'SELECT stimulus_id, file_name FROM experiment_stimuli WHERE experiment_id = $1',
-        [metadata.experiment_id],
-      );
-      const stimulusNameToIdMap = new Map<string, number>();
-      for (const stim of stimuliResult.rows) {
-        stimulusNameToIdMap.set(stim.file_name, stim.stimulus_id);
-      }
-
       for (const row of parsedCsv) {
-        const stimulusId =
-          row.file_name && stimulusNameToIdMap.get(row.file_name)
-            ? stimulusNameToIdMap.get(row.file_name)
-            : null;
+        let stimulusId: number | null = null;
+        let calibrationItemId: number | null = null;
 
+        if (row.stim_file && row.stim_file !== 'n/a') {
+          // ★★★ 修正箇所 ★★★
+          // セッションタイプに応じて問い合わせるテーブルを変更
+          if (sessionType === 'calibration') {
+            const calItemResult = await dbClient.query(
+              'SELECT item_id FROM calibration_items WHERE file_name = $1 AND experiment_id = $2',
+              [row.stim_file, metadata.experiment_id],
+            );
+            if (calItemResult.rowCount > 0) {
+              calibrationItemId = calItemResult.rows[0].item_id;
+            }
+          } else {
+            // mainタスクの場合
+            const stimulusResult = await dbClient.query(
+              'SELECT stimulus_id FROM experiment_stimuli WHERE file_name = $1 AND experiment_id = $2',
+              [row.stim_file, metadata.experiment_id],
+            );
+            if (stimulusResult.rowCount > 0) {
+              stimulusId = stimulusResult.rows[0].stimulus_id;
+            }
+          }
+        }
+
+        // ★★★ 修正箇所 ★★★
+        // 挿入するカラムを動的に変更
         const insertEventQuery =
-          'INSERT INTO session_events (session_id, stimulus_id, onset, duration, trial_type, description, value) VALUES ($1, $2, $3, $4, $5, $6, $7)';
+          'INSERT INTO session_events (session_id, stimulus_id, calibration_item_id, onset, duration, trial_type, description, value) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)';
         await dbClient.query(insertEventQuery, [
           metadata.session_id,
           stimulusId,
+          calibrationItemId,
           row.onset ?? 0,
           row.duration ?? 0,
           row.trial_type,
@@ -107,6 +129,7 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
 
     const jobPayload: DataLinkerJobPayload = {
       session_id: metadata.session_id,
+      // 以下のデータはdata_linker側でDBから再取得するため、ここでは必須ではない
       user_id: metadata.user_id,
       experiment_id: metadata.experiment_id,
       session_start_utc: metadata.start_time,

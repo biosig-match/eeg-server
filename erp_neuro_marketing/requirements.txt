@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+psycopg2-binary
+requests
+mne
+mne-bids
+pandas
+scikit-learn
+numpy
+openai
