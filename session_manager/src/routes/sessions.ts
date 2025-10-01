@@ -44,16 +44,33 @@ sessionsRouter.post(
 );
 
 sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
-  const formData = await c.req.formData();
-  const metadataJson = formData.get('metadata') as string;
-  const eventsLogCsvFile = formData.get('events_log_csv') as File;
+  // ミドルウェアでパース済みのボディを取得（キャッシュ利用）
+  let formData = c.get('parsedBody');
+  if (!formData) {
+    // フォールバック: ミドルウェアを通らなかった場合
+    formData = await c.req.formData();
+  }
 
-  if (!metadataJson) {
+  const metadataJson = formData.get
+    ? formData.get('metadata')
+    : (formData as any).metadata;
+  const eventsLogCsvFile = formData.get
+    ? formData.get('events_log_csv')
+    : (formData as any).events_log_csv;
+
+  const metadataString =
+    typeof metadataJson === 'string'
+      ? metadataJson
+      : Array.isArray(metadataJson)
+        ? metadataJson[0]
+        : metadataJson;
+
+  if (!metadataString) {
     return c.json({ error: 'metadata field is required.' }, 400);
   }
   const dbClient = await dbPool.connect();
   try {
-    const metadata = sessionEndMetadataSchema.parse(JSON.parse(metadataJson));
+    const metadata = sessionEndMetadataSchema.parse(JSON.parse(metadataString));
 
     await dbClient.query('BEGIN');
 
@@ -72,24 +89,41 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
     const sessionType = sessionUpdateResult.rows[0].session_type;
 
     if (eventsLogCsvFile) {
-      await dbClient.query('DELETE FROM session_events WHERE session_id = $1', [
-        metadata.session_id,
-      ]);
+      const existingEvents = await dbClient.query(
+        'SELECT COUNT(*) FROM session_events WHERE session_id = $1',
+        [metadata.session_id],
+      );
+      if (parseInt(existingEvents.rows[0].count, 10) > 0) {
+        await dbClient.query('DELETE FROM session_events WHERE session_id = $1', [
+          metadata.session_id,
+        ]);
+      }
 
       const csvContent = await eventsLogCsvFile.text();
       const records: unknown[] = csvParse(csvContent, { columns: true, skip_empty_lines: true });
       const parsedCsv = z.array(eventLogCsvRowSchema).parse(records);
 
+      const stimuliResult = await dbClient.query(
+        'SELECT stimulus_id, file_name FROM experiment_stimuli WHERE experiment_id = $1',
+        [metadata.experiment_id],
+      );
+      const stimulusNameToIdMap = new Map<string, number>();
+      for (const stim of stimuliResult.rows) {
+        stimulusNameToIdMap.set(stim.file_name, stim.stimulus_id);
+      }
+
       for (const row of parsedCsv) {
+        if (row.onset === undefined || row.onset === null) {
+          throw new Error(
+            `Event missing required 'onset' field (BIDS requirement). Event data: ${JSON.stringify(row)}`,
+          );
+        }
+
         let stimulusId: number | null = null;
         let calibrationItemId: number | null = null;
 
-        // ### <<< 修正点 (BUG FIX) >>> ###
-        // CSVの `file_name` を参照するように修正 (stim_file -> file_name)
         if (row.file_name && row.file_name !== 'n/a') {
           if (sessionType === 'calibration') {
-            // ### <<< 修正点 (BUG FIX) >>> ###
-            // calibration_itemsはグローバルなテーブルなので、experiment_idで絞り込まない
             const calItemResult = await dbClient.query(
               'SELECT item_id FROM calibration_items WHERE file_name = $1',
               [row.file_name],
@@ -98,12 +132,9 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
               calibrationItemId = calItemResult.rows[0].item_id;
             }
           } else {
-            const stimulusResult = await dbClient.query(
-              'SELECT stimulus_id FROM experiment_stimuli WHERE file_name = $1 AND experiment_id = $2',
-              [row.file_name, metadata.experiment_id],
-            );
-            if (stimulusResult.rowCount > 0) {
-              stimulusId = stimulusResult.rows[0].stimulus_id;
+            const mappedStimulusId = stimulusNameToIdMap.get(row.file_name);
+            if (mappedStimulusId !== undefined) {
+              stimulusId = mappedStimulusId;
             }
           }
         }
@@ -114,7 +145,7 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
           metadata.session_id,
           stimulusId,
           calibrationItemId,
-          row.onset ?? 0,
+          row.onset,
           row.duration ?? 0,
           row.trial_type,
           row.description || null,

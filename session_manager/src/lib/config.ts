@@ -19,6 +19,7 @@ const envSchema = z.object({
   // ### <<< 修正点 >>> ###
   // BIDS ExporterサービスのURLを追加
   BIDS_EXPORTER_URL: z.string().url(),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
 const parsedEnv = envSchema.safeParse({

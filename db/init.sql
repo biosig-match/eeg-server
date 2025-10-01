@@ -96,10 +96,14 @@ CREATE TABLE IF NOT EXISTS raw_data_objects (
     object_id VARCHAR(512) PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,
     device_id VARCHAR(255),
+    -- NOTE: start_time and end_time are initially NULL when raw data is first ingested.
+    -- These fields will be populated by the DataLinker service after clock offset correction.
+    -- Until DataLinker processes the data, queries should use start_time_device and end_time_device instead.
+    -- For tracking DataLinker implementation status, see related issue/PR.
     start_time TIMESTAMPTZ, -- Corrected UTC start time, filled by DataLinker
     end_time TIMESTAMPTZ,   -- Corrected UTC end time, filled by DataLinker
-    start_time_device BIGINT,
-    end_time_device BIGINT
+    start_time_device BIGINT, -- Device-reported timestamp (32-bit tick count)
+    end_time_device BIGINT    -- Device-reported timestamp (32-bit tick count)
 );
 
 -- Junction table to link sessions and raw_data_objects
