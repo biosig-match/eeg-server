@@ -87,8 +87,12 @@ async function processMessage(msg: ConsumeMessage | null) {
       return;
     }
 
-    // 伸長処理
-    const decompressedData = zstdDecompress(compressedPayload);
+    const payloadAsArrayBuffer = compressedPayload.buffer.slice(
+      compressedPayload.byteOffset,
+      compressedPayload.byteOffset + compressedPayload.byteLength,
+    ) as ArrayBuffer;
+
+    const decompressedData = zstdDecompress(payloadAsArrayBuffer);
 
     const { deviceId, startTime, endTime } = extractMetadataFromPacket(
       Buffer.from(decompressedData),

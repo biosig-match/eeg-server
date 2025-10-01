@@ -4,6 +4,7 @@ import path from 'path';
 import { Pool } from 'pg';
 import * as Minio from 'minio';
 import { init, compress } from '@bokuweb/zstd-wasm';
+import JSZip from 'jszip';
 
 // --- Test Configuration ---
 const BASE_URL = 'http://localhost:8080/api/v1';
@@ -16,8 +17,6 @@ const MINIO_CONFIG = {
   secretKey: 'minioadmin',
 };
 const MINIO_RAW_DATA_BUCKET = 'raw-data';
-// ### <<< 修正点 >>> ###
-// stimuliが保存されるバケット名を追加
 const MINIO_MEDIA_BUCKET = 'media';
 const BIDS_BUCKET = 'bids-exports';
 
@@ -26,6 +25,9 @@ const PARTICIPANT_ID = `test-participant-${Date.now()}`;
 const STRANGER_ID = `test-stranger-${Date.now()}`;
 
 const ASSETS_DIR = path.resolve(__dirname, '../assets');
+// ### <<< 修正点 >>> ###
+// テスト成果物を出力するディレクトリを定義
+const TEST_OUTPUT_DIR = path.resolve(__dirname, '../test-output');
 
 // --- Helper Functions ---
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,7 +42,6 @@ async function pollForDbStatus(
 ): Promise<boolean> {
   const startTime = Date.now();
   while (Date.now() - startTime < timeout) {
-    // console.log(`[Polling] Checking DB for status '${expectedValue}'...`);
     const { rows } = await pool.query(query, params);
     if (rows.length > 0 && rows[0].status === expectedValue) {
       console.log(`[Polling] Success! DB status reached '${expectedValue}'.`);
@@ -115,13 +116,13 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     minioClient = new Minio.Client(MINIO_CONFIG);
 
     // ### <<< 修正点 >>> ###
-    // 依存関係を考慮し、関連テーブルをTRUNCATEでクリーンアップ
+    await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true });
+    console.log(`[Test Setup] Test output will be saved to: ${TEST_OUTPUT_DIR}`);
+
     await dbPool.query('TRUNCATE TABLE experiments CASCADE');
     await dbPool.query('TRUNCATE TABLE calibration_items CASCADE');
     console.log('[Test Setup] Cleaned database tables.');
 
-    // ### <<< 修正点 >>> ###
-    // テスト開始前に、グローバルなキャリブレーション用アセットをDBとMinIOに登録する
     console.log('[Test Setup] Seeding global calibration items...');
     const calibrationAssets = [
       { fileName: 'face01.png', itemType: 'target', filePath: path.join(ASSETS_DIR, 'face01.png') },
@@ -134,17 +135,15 @@ describe('Full End-to-End Smartphone App Simulation', () => {
 
     for (const asset of calibrationAssets) {
       const objectId = `stimuli/calibration/${asset.fileName}`;
-      // MinIOにファイルをアップロード
       await minioClient.fPutObject(MINIO_MEDIA_BUCKET, objectId, asset.filePath, {
         'Content-Type': 'image/png',
       });
-      // DBにメタデータを登録 (存在すれば更新、なければ挿入)
       await dbPool.query(
         `INSERT INTO calibration_items (file_name, item_type, object_id)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (file_name) DO UPDATE SET
-               item_type = EXCLUDED.item_type,
-               object_id = EXCLUDED.object_id`,
+         VALUES ($1, $2, $3)
+         ON CONFLICT (file_name) DO UPDATE SET
+           item_type = EXCLUDED.item_type,
+           object_id = EXCLUDED.object_id`,
         [asset.fileName, asset.itemType, objectId],
       );
     }
@@ -174,7 +173,6 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     experimentId = expBody.experiment_id;
     console.log(`✅ [Step 1] Experiment created with ID: ${experimentId}`);
 
-    // ### <<< 追加テスト >>> ###
     // Step 1.1: Verify experiment settings
     console.log('\n🧪 [Step 1.1] Verifying experiment settings...');
     const verifyExpResponse = await fetch(`${BASE_URL}/experiments`, {
@@ -210,7 +208,6 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     expect(registerStimuliResponse.status).toBe(202);
     console.log('✅ [Step 1.5] Stimuli registration accepted.');
 
-    // ### <<< 追加テスト >>> ###
     // Step 1.6: Stranger fails to upload stimuli
     console.log('\n🧪 [Step 1.6] Stranger fails to upload stimuli (auth test)...');
     const unauthorizedStimuliResponse = await fetch(
@@ -258,7 +255,6 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     expect(calibAssetsResponse.ok).toBe(true);
     console.log('✅ [Step 4.1] App fetched calibration assets.');
 
-    // ### <<< 追加テスト >>> ###
     // Step 4.1.1: Download a calibration image
     console.log('\n🧪 [Step 4.1.1] App downloads a calibration image...');
     const calibImageResponse = await fetch(`${BASE_URL}/stimuli/download/face01.png`, {
@@ -339,7 +335,6 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     expect(stimuliListResponse.ok).toBe(true);
     console.log('✅ [Step 5.1] App fetched stimuli list for PsychoPy.');
 
-    // ### <<< 追加テスト >>> ###
     // Step 5.1.1: Stranger fails to fetch stimuli list
     console.log('\n🧪 [Step 5.1.1] Stranger fails to fetch stimuli list (auth test)...');
     const unauthorizedListResponse = await fetch(
@@ -351,7 +346,6 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     expect(unauthorizedListResponse.status).toBe(403);
     console.log('✅ [Step 5.1.1] Correctly forbidden for stranger.');
 
-    // ### <<< 追加テスト >>> ###
     // Step 5.1.2: Participant downloads a task image
     console.log('\n🧪 [Step 5.1.2] App downloads a task image...');
     const taskImageResponse = await fetch(`${BASE_URL}/stimuli/download/product_a.png`, {
@@ -456,7 +450,6 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     const { task_id } = await startExportResponse.json();
     console.log(`✅ [Step 7.1] BIDS export task started with ID: ${task_id}`);
 
-    // ### <<< 追加テスト >>> ###
     // Step 7.1.1: Stranger fails to request BIDS export
     console.log('\n🧪 [Step 7.1.1] Stranger fails to request BIDS export (auth test)...');
     const unauthorizedExportResponse = await fetch(
@@ -473,46 +466,47 @@ describe('Full End-to-End Smartphone App Simulation', () => {
     expect(completedTask.status).toBe('completed');
     console.log('✅ [Step 7.2] BIDS export task completed.');
 
-    // Step 8: Owner downloads and verifies the BIDS file
-    console.log('\n🧪 [Step 8] Owner downloads and verifies BIDS file...');
+    // Step 8: Owner downloads, saves, and verifies the BIDS file
+    console.log('\n🧪 [Step 8] Owner downloads, saves, and verifies BIDS file...');
     const downloadResponse = await fetch(`${BASE_URL}/export-tasks/${task_id}/download`, {
       headers: { 'X-User-Id': OWNER_ID },
     });
     expect(downloadResponse.ok).toBe(true);
 
-    let tempDir: string | null = null;
-    try {
-      tempDir = await fs.mkdtemp(path.join('/tmp', 'bids-verify-'));
-      const zipPath = path.join(tempDir, 'bids_export.zip');
-      await Bun.write(zipPath, await downloadResponse.arrayBuffer());
-      const unzipProc = Bun.spawnSync(['unzip', zipPath, '-d', tempDir]);
-      expect(unzipProc.success).toBe(true);
+    const zipData = await downloadResponse.arrayBuffer();
 
-      const subjectId = PARTICIPANT_ID.replace(/-/g, '');
-      const calibPath = path.join(
-        tempDir,
-        'bids_dataset',
-        `sub-${subjectId}`,
-        'ses-1',
-        'eeg',
-        `sub-${subjectId}_ses-1_task-calibration_eeg.json`,
-      );
-      const mainPath = path.join(
-        tempDir,
-        'bids_dataset',
-        `sub-${subjectId}`,
-        'ses-2',
-        'eeg',
-        `sub-${subjectId}_ses-2_task-mainexternal_eeg.json`,
-      );
+    // Save the downloaded zip file
+    const zipPath = path.join(TEST_OUTPUT_DIR, `bids_export_${experimentId}.zip`);
+    await Bun.write(zipPath, zipData);
+    console.log(`✅ [Step 8.1] BIDS archive saved to: ${zipPath}`);
 
-      await fs.access(calibPath);
-      await fs.access(mainPath);
-      console.log('✅ [Step 8] BIDS archive contains both calibration and main task data.');
-    } finally {
-      if (tempDir) {
-        await fs.rm(tempDir, { recursive: true, force: true });
+    // Load with jszip for verification and extraction
+    const zip = await JSZip.loadAsync(zipData);
+
+    const subjectId = PARTICIPANT_ID.replace(/-/g, '');
+    const calibPathInZip = `bids_dataset/sub-${subjectId}/ses-1/eeg/sub-${subjectId}_ses-1_task-calibration_eeg.json`;
+    const mainPathInZip = `bids_dataset/sub-${subjectId}/ses-2/eeg/sub-${subjectId}_ses-2_task-mainexternal_eeg.json`;
+
+    // Verify key files exist in the zip
+    expect(zip.file(calibPathInZip)).not.toBeNull();
+    expect(zip.file(mainPathInZip)).not.toBeNull();
+    console.log('✅ [Step 8.2] BIDS archive content verified successfully.');
+
+    // Extract all files from the zip
+    const extractionPath = path.join(TEST_OUTPUT_DIR, `bids_export_${experimentId}`);
+    await fs.mkdir(extractionPath, { recursive: true });
+
+    for (const filename in zip.files) {
+      const file = zip.files[filename];
+      const destPath = path.join(extractionPath, filename);
+
+      if (file.dir) {
+        await fs.mkdir(destPath, { recursive: true });
+      } else {
+        const content = await file.async('nodebuffer');
+        await fs.writeFile(destPath, content);
       }
     }
+    console.log(`✅ [Step 8.3] BIDS archive extracted to: ${extractionPath}`);
   }, 90000);
 });

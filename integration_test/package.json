@@ -6,6 +6,7 @@
     "test": "bun test"
   },
   "devDependencies": {
+    "@types/jszip": "^3.4.1",
     "bun-types": "latest"
   },
   "dependencies": {

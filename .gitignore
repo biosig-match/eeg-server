@@ -24,6 +24,7 @@ event_corrector/node_modules/
 
 # Project outputs
 bids_output/
+integration_test/test-output
 
 # VSCode
 .vscode/*
