@@ -116,12 +116,13 @@ async function processMessage(msg: ConsumeMessage | null) {
       return;
     }
 
-    const payloadAsArrayBuffer = compressedPayload.buffer.slice(
+    const payloadView = new Uint8Array(
+      compressedPayload.buffer,
       compressedPayload.byteOffset,
-      compressedPayload.byteOffset + compressedPayload.byteLength,
-    ) as ArrayBuffer;
+      compressedPayload.byteLength,
+    );
 
-    const decompressedData = zstdDecompress(payloadAsArrayBuffer);
+    const decompressedData = zstdDecompress(payloadView);
 
     const { deviceId, startTime, endTime } = extractMetadataFromPacket(
       Buffer.from(decompressedData),
