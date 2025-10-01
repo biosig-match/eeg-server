@@ -6,6 +6,13 @@
     "test": "bun test"
   },
   "devDependencies": {
+    "@types/jszip": "^3.4.1",
     "bun-types": "latest"
+  },
+  "dependencies": {
+    "@bokuweb/zstd-wasm": "^0.0.27",
+    "@types/pg": "^8.15.5",
+    "minio": "^8.0.6",
+    "pg": "^8.16.3"
   }
 }

@@ -14,9 +14,8 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
     const userId = c.req.header('X-User-Id');
     if (!userId) {
       return c.json({ error: 'Unauthorized: X-User-Id header is required.' }, 401);
-    }
+    } // 実験IDをパスパラメータ、JSONボディ、またはフォームデータから取得
 
-    // 実験IDをパスパラメータ、JSONボディ、またはフォームデータから取得
     let experimentId: string | undefined;
 
     experimentId = c.req.param('experiment_id');
@@ -81,9 +80,8 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
       } catch (e) {
         errorLog('[Auth Middleware] CRITICAL: Error parsing request body:', e);
       }
-    }
+    } // Auth Manager Serviceに権限チェックをリクエスト
 
-    // Auth Manager Serviceに権限チェックをリクエスト
     if (!experimentId) {
       errorLog('[Auth Middleware] FINAL CHECK FAILED: Could not extract experimentId.');
       errorLog(`[Auth Middleware] Path: ${c.req.path}, Method: ${c.req.method}`);
@@ -124,5 +122,20 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
         503,
       );
     }
+  });
+};
+
+// ### <<< 修正点 >>> ###
+// 新しいミドルウェアを追加
+/**
+ * ユーザーが認証済みであるか（X-User-Idヘッダーが存在するか）のみを検証するシンプルなミドルウェア
+ */
+export const requireUser = () => {
+  return createMiddleware(async (c, next) => {
+    const userId = c.req.header('X-User-Id');
+    if (!userId) {
+      return c.json({ error: 'Unauthorized: X-User-Id header is required.' }, 401);
+    }
+    await next();
   });
 };

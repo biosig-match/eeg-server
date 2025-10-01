@@ -19,9 +19,12 @@ session_manager/test/dummy_assets
 auth_manager/node_modules/
 stimulus_asset_processor/node_modules/
 integration_test/node_modules/
+data_linker/node_modules/
+event_corrector/node_modules/
 
 # Project outputs
 bids_output/
+integration_test/test-output
 
 # VSCode
 .vscode/*

@@ -75,26 +75,28 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
     await dbClient.query('BEGIN');
 
     const updateQuery =
-      'UPDATE sessions SET end_time = $1, device_id = $2, clock_offset_info = $3 WHERE session_id = $4';
-    await dbClient.query(updateQuery, [
+      'UPDATE sessions SET end_time = $1, device_id = $2, clock_offset_info = $3 WHERE session_id = $4 RETURNING session_type';
+    const sessionUpdateResult = await dbClient.query(updateQuery, [
       metadata.end_time,
       metadata.device_id,
       metadata.clock_offset_info ? JSON.stringify(metadata.clock_offset_info) : null,
       metadata.session_id,
     ]);
 
+    if (sessionUpdateResult.rowCount === 0) {
+      throw new Error(`Session with ID ${metadata.session_id} not found for update.`);
+    }
+    const sessionType = sessionUpdateResult.rows[0].session_type;
+
     if (eventsLogCsvFile) {
-      // 既存イベントの存在チェック
       const existingEvents = await dbClient.query(
         'SELECT COUNT(*) FROM session_events WHERE session_id = $1',
         [metadata.session_id],
       );
-      if (parseInt(existingEvents.rows[0].count) > 0) {
-        await dbClient.query('ROLLBACK');
-        return c.json(
-          { error: 'Session events already exist. Cannot overwrite existing events.' },
-          409,
-        );
+      if (parseInt(existingEvents.rows[0].count, 10) > 0) {
+        await dbClient.query('DELETE FROM session_events WHERE session_id = $1', [
+          metadata.session_id,
+        ]);
       }
 
       const csvContent = await eventsLogCsvFile.text();
@@ -111,23 +113,38 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
       }
 
       for (const row of parsedCsv) {
-        // BIDS仕様ではonsetは必須フィールド
         if (row.onset === undefined || row.onset === null) {
           throw new Error(
             `Event missing required 'onset' field (BIDS requirement). Event data: ${JSON.stringify(row)}`,
           );
         }
 
-        const stimulusId =
-          row.file_name && stimulusNameToIdMap.get(row.file_name)
-            ? stimulusNameToIdMap.get(row.file_name)
-            : null;
+        let stimulusId: number | null = null;
+        let calibrationItemId: number | null = null;
+
+        if (row.file_name && row.file_name !== 'n/a') {
+          if (sessionType === 'calibration') {
+            const calItemResult = await dbClient.query(
+              'SELECT item_id FROM calibration_items WHERE file_name = $1',
+              [row.file_name],
+            );
+            if (calItemResult.rowCount > 0) {
+              calibrationItemId = calItemResult.rows[0].item_id;
+            }
+          } else {
+            const mappedStimulusId = stimulusNameToIdMap.get(row.file_name);
+            if (mappedStimulusId !== undefined) {
+              stimulusId = mappedStimulusId;
+            }
+          }
+        }
 
         const insertEventQuery =
-          'INSERT INTO session_events (session_id, stimulus_id, onset, duration, trial_type, description, value) VALUES ($1, $2, $3, $4, $5, $6, $7)';
+          'INSERT INTO session_events (session_id, stimulus_id, calibration_item_id, onset, duration, trial_type, description, value) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)';
         await dbClient.query(insertEventQuery, [
           metadata.session_id,
           stimulusId,
+          calibrationItemId,
           row.onset,
           row.duration ?? 0,
           row.trial_type,

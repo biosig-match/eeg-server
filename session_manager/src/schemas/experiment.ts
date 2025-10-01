@@ -8,6 +8,10 @@ export const createExperimentSchema = z.object({
   name: z.string().min(1, 'Experiment name is required.'),
   description: z.string().optional(),
   password: z.string().min(4, 'Password must be at least 4 characters.').optional(),
+
+  // ### <<< 修正点 >>> ###
+  // 刺激の提示順を指定するフィールドを追加
+  presentation_order: z.enum(['sequential', 'random']).optional().default('random'),
 });
 
 /**

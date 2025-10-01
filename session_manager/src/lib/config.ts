@@ -16,6 +16,9 @@ const envSchema = z.object({
   DATA_LINKER_QUEUE: z.string(),
   STIMULUS_ASSET_QUEUE: z.string(),
   AUTH_MANAGER_URL: z.string().url(),
+  // ### <<< 修正点 >>> ###
+  // BIDS ExporterサービスのURLを追加
+  BIDS_EXPORTER_URL: z.string().url(),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
