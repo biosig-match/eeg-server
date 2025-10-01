@@ -1,5 +1,6 @@
 import { createMiddleware } from 'hono/factory';
 import { config } from '../lib/config';
+import { debugLog, warnLog, errorLog } from '../lib/logger';
 import type { ParticipantRole } from '../schemas/auth';
 
 /**
@@ -22,7 +23,7 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
 
     if (!experimentId) {
       const contentType = c.req.header('Content-Type') || '';
-      console.log(
+      debugLog(
         `[Auth Middleware] No experimentId in path. Attempting to find in body. Content-Type: "${contentType}"`,
       );
 
@@ -33,14 +34,17 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
         } else if (contentType.includes('multipart/form-data')) {
           body = await c.req.parseBody({ all: true });
         } else {
-          console.warn(
+          warnLog(
             `[Auth Middleware] Unhandled Content-Type: "${contentType}". Attempting parseBody().`,
           );
           body = await c.req.parseBody({ all: true });
         }
 
-        console.log('[Auth Middleware] Successfully parsed body. Keys:', Object.keys(body));
-        console.log('[Auth Middleware] Full parsed body:', JSON.stringify(body, null, 2));
+        // パース済みボディをコンテキストにキャッシュして、後続のハンドラーで再利用可能にする
+        c.set('parsedBody', body);
+
+        debugLog('[Auth Middleware] Successfully parsed body. Keys:', Object.keys(body));
+        debugLog('[Auth Middleware] Full parsed body:', JSON.stringify(body, null, 2));
 
         if (body && typeof (body as any).experiment_id === 'string') {
           experimentId = (body as any).experiment_id;
@@ -54,35 +58,35 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
               if (metadata && typeof metadata.experiment_id === 'string') {
                 experimentId = metadata.experiment_id;
               } else {
-                console.warn(
+                warnLog(
                   '[Auth Middleware] Parsed metadata but "experiment_id" is missing or not a string.',
                 );
               }
             } catch (jsonError) {
-              console.error(
+              errorLog(
                 '[Auth Middleware] FAILED to parse metadata string as JSON.',
                 jsonError,
               );
             }
           } else {
-            console.warn(
+            warnLog(
               `[Auth Middleware] The 'metadata' part was not a string. Actual type: ${typeof metadataString}. Cannot extract experimentId.`,
             );
           }
         } else {
-          console.warn(
+          warnLog(
             '[Auth Middleware] Parsed body, but neither "experiment_id" nor "metadata" field was found.',
           );
         }
       } catch (e) {
-        console.error('[Auth Middleware] CRITICAL: Error parsing request body:', e);
+        errorLog('[Auth Middleware] CRITICAL: Error parsing request body:', e);
       }
     }
 
     // Auth Manager Serviceに権限チェックをリクエスト
     if (!experimentId) {
-      console.error('[Auth Middleware] FINAL CHECK FAILED: Could not extract experimentId.');
-      console.error(`[Auth Middleware] Path: ${c.req.path}, Method: ${c.req.method}`);
+      errorLog('[Auth Middleware] FINAL CHECK FAILED: Could not extract experimentId.');
+      errorLog(`[Auth Middleware] Path: ${c.req.path}, Method: ${c.req.method}`);
       return c.json({ error: 'Bad Request: experiment_id not found in path or body.' }, 400);
     }
 
@@ -114,7 +118,7 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
 
       await next();
     } catch (error) {
-      console.error('Authorization check failed:', error);
+      errorLog('Authorization check failed:', error);
       return c.json(
         { error: 'Service Unavailable: Failed to communicate with authorization service.' },
         503,

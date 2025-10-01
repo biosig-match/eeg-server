@@ -72,6 +72,35 @@ function extractMetadataFromPacket(decompressedData: Buffer): {
 }
 
 /**
+ * エラーが一時的なものか恒久的なものかを判別
+ * 一時的なエラーの場合はtrueを返し、メッセージをリキューすべき
+ */
+function isTransientError(error: any): boolean {
+  // ネットワーク関連のエラー
+  if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
+    return true;
+  }
+
+  // PostgreSQLの一時的エラー
+  if (error.code === '08006' || error.code === '08003' || error.code === '57P03') {
+    // 接続失敗、接続が存在しない、サーバーシャットダウン中
+    return true;
+  }
+
+  // MinIOの一時的エラー（エラーメッセージで判断）
+  if (
+    error.message?.includes('timeout') ||
+    error.message?.includes('ECONNRESET') ||
+    error.message?.includes('503')
+  ) {
+    return true;
+  }
+
+  // その他は恒久的エラーとして扱う（データ不正など）
+  return false;
+}
+
+/**
  * メインのメッセージ処理ロジック
  */
 async function processMessage(msg: ConsumeMessage | null) {
@@ -126,7 +155,15 @@ async function processMessage(msg: ConsumeMessage | null) {
     amqpChannel?.ack(msg);
   } catch (error: any) {
     console.error('❌ メッセージ処理中にエラーが発生しました:', error.message);
-    amqpChannel?.nack(msg, false, false);
+
+    // エラーの種類に応じて処理を分岐
+    if (isTransientError(error)) {
+      console.warn('⚠️  一時的なエラーのため、メッセージをリキューします。');
+      amqpChannel?.nack(msg, false, true); // リキューする
+    } else {
+      console.error('🔴 恒久的なエラーのため、メッセージを破棄します。');
+      amqpChannel?.nack(msg, false, false); // リキューしない
+    }
   }
 }
 

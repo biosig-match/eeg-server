@@ -44,16 +44,33 @@ sessionsRouter.post(
 );
 
 sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
-  const formData = await c.req.formData();
-  const metadataJson = formData.get('metadata') as string;
-  const eventsLogCsvFile = formData.get('events_log_csv') as File;
+  // ミドルウェアでパース済みのボディを取得（キャッシュ利用）
+  let formData = c.get('parsedBody');
+  if (!formData) {
+    // フォールバック: ミドルウェアを通らなかった場合
+    formData = await c.req.formData();
+  }
 
-  if (!metadataJson) {
+  const metadataJson = formData.get
+    ? formData.get('metadata')
+    : (formData as any).metadata;
+  const eventsLogCsvFile = formData.get
+    ? formData.get('events_log_csv')
+    : (formData as any).events_log_csv;
+
+  const metadataString =
+    typeof metadataJson === 'string'
+      ? metadataJson
+      : Array.isArray(metadataJson)
+        ? metadataJson[0]
+        : metadataJson;
+
+  if (!metadataString) {
     return c.json({ error: 'metadata field is required.' }, 400);
   }
   const dbClient = await dbPool.connect();
   try {
-    const metadata = sessionEndMetadataSchema.parse(JSON.parse(metadataJson));
+    const metadata = sessionEndMetadataSchema.parse(JSON.parse(metadataString));
 
     await dbClient.query('BEGIN');
 
@@ -67,9 +84,18 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
     ]);
 
     if (eventsLogCsvFile) {
-      await dbClient.query('DELETE FROM session_events WHERE session_id = $1', [
-        metadata.session_id,
-      ]);
+      // 既存イベントの存在チェック
+      const existingEvents = await dbClient.query(
+        'SELECT COUNT(*) FROM session_events WHERE session_id = $1',
+        [metadata.session_id],
+      );
+      if (parseInt(existingEvents.rows[0].count) > 0) {
+        await dbClient.query('ROLLBACK');
+        return c.json(
+          { error: 'Session events already exist. Cannot overwrite existing events.' },
+          409,
+        );
+      }
 
       const csvContent = await eventsLogCsvFile.text();
       const records: unknown[] = csvParse(csvContent, { columns: true, skip_empty_lines: true });
@@ -85,6 +111,13 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
       }
 
       for (const row of parsedCsv) {
+        // BIDS仕様ではonsetは必須フィールド
+        if (row.onset === undefined || row.onset === null) {
+          throw new Error(
+            `Event missing required 'onset' field (BIDS requirement). Event data: ${JSON.stringify(row)}`,
+          );
+        }
+
         const stimulusId =
           row.file_name && stimulusNameToIdMap.get(row.file_name)
             ? stimulusNameToIdMap.get(row.file_name)
@@ -95,7 +128,7 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
         await dbClient.query(insertEventQuery, [
           metadata.session_id,
           stimulusId,
-          row.onset ?? 0,
+          row.onset,
           row.duration ?? 0,
           row.trial_type,
           row.description || null,

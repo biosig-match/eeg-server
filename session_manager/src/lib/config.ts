@@ -16,6 +16,7 @@ const envSchema = z.object({
   DATA_LINKER_QUEUE: z.string(),
   STIMULUS_ASSET_QUEUE: z.string(),
   AUTH_MANAGER_URL: z.string().url(),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
 const parsedEnv = envSchema.safeParse({
