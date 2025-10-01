@@ -65,9 +65,12 @@ def download_export(task_id: UUID):
     through this service.
     """
     task = get_task_status(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
     if not isinstance(task, TaskStatus):
         return task
-        
+
     if task.status != "completed" or not task.result_file_path:
         raise HTTPException(status_code=400, detail=f"Task is not complete. Current status: {task.status}")
 
