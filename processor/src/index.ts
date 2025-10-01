@@ -1,10 +1,9 @@
 import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib';
 import { Client as MinioClient } from 'minio';
 import { Pool } from 'pg';
-import { init as zstdInit, decompress as zstdDecompress } from '@bokuweb/zstd-wasm';
+import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm';
 import { v4 as uuidv4 } from 'uuid';
 
-// --- 環境変数 (変更なし) ---
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@rabbitmq';
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://admin:password@db:5432/eeg_data';
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || 'minio';
@@ -14,7 +13,8 @@ const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || 'minioadmin';
 const MINIO_USE_SSL = process.env.MINIO_USE_SSL === 'true';
 const MINIO_RAW_DATA_BUCKET = process.env.MINIO_RAW_DATA_BUCKET || 'raw-data';
 
-// --- 定数 (変更なし) ---
+const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any;
+
 const RAW_DATA_EXCHANGE = 'raw_data_exchange';
 const PROCESSING_QUEUE = 'processing_queue';
 
@@ -74,6 +74,35 @@ function extractMetadataFromPacket(decompressedData: Buffer): {
 }
 
 /**
+ * エラーが一時的なものか恒久的なものかを判別
+ * 一時的なエラーの場合はtrueを返し、メッセージをリキューすべき
+ */
+function isTransientError(error: any): boolean {
+  // ネットワーク関連のエラー
+  if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
+    return true;
+  }
+
+  // PostgreSQLの一時的エラー
+  if (error.code === '08006' || error.code === '08003' || error.code === '57P03') {
+    // 接続失敗、接続が存在しない、サーバーシャットダウン中
+    return true;
+  }
+
+  // MinIOの一時的エラー（エラーメッセージで判断）
+  if (
+    error.message?.includes('timeout') ||
+    error.message?.includes('ECONNRESET') ||
+    error.message?.includes('503')
+  ) {
+    return true;
+  }
+
+  // その他は恒久的エラーとして扱う（データ不正など）
+  return false;
+}
+
+/**
  * メインのメッセージ処理ロジック
  */
 async function processMessage(msg: ConsumeMessage | null) {
@@ -89,12 +118,16 @@ async function processMessage(msg: ConsumeMessage | null) {
       return;
     }
 
-    // 伸長処理
-    const decompressedData = zstdDecompress(compressedPayload);
-
-    const { deviceId, startTime, endTime } = extractMetadataFromPacket(
-      Buffer.from(decompressedData),
+    const payloadView = new Uint8Array(
+      compressedPayload.buffer,
+      compressedPayload.byteOffset,
+      compressedPayload.byteLength,
     );
+
+    const decompressedData = zstdDecompress(payloadView);
+    const decompressedBuffer = Buffer.from(decompressedData);
+
+    const { deviceId, startTime, endTime } = extractMetadataFromPacket(decompressedBuffer);
 
     // MinIO用のオブジェクトIDを生成
     const objectId = `raw/${userId}/start_tick=${startTime}/end_tick=${endTime}_${uuidv4()}.zst`;
@@ -117,18 +150,26 @@ async function processMessage(msg: ConsumeMessage | null) {
 
     // 2. メタデータをPostgreSQLに挿入
     const query = `
-      INSERT INTO raw_data_objects (object_id, user_id, device_id, start_time, end_time)
-      VALUES ($1, $2, $3, to_timestamp($4), to_timestamp($5))
+      INSERT INTO raw_data_objects (object_id, user_id, device_id, start_time_device, end_time_device)
+      VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (object_id) DO NOTHING;
     `;
-    await pgPool.query(query, [objectId, userId, deviceId, startTime / 1000000, endTime / 1000000]);
+    await pgPool.query(query, [objectId, userId, deviceId, startTime, endTime]);
     console.log(`[PostgreSQL] メタデータ挿入成功: ${objectId}`);
 
     // 3. メッセージのACKを送信
     amqpChannel?.ack(msg);
   } catch (error: any) {
     console.error('❌ メッセージ処理中にエラーが発生しました:', error.message);
-    amqpChannel?.nack(msg, false, true);
+
+    // エラーの種類に応じて処理を分岐
+    if (isTransientError(error)) {
+      console.warn('⚠️  一時的なエラーのため、メッセージをリキューします。');
+      amqpChannel?.nack(msg, false, true); // リキューする
+    } else {
+      console.error('🔴 恒久的なエラーのため、メッセージを破棄します。');
+      amqpChannel?.nack(msg, false, false); // リキューしない
+    }
   }
 }
 
