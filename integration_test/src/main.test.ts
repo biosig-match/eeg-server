@@ -153,7 +153,6 @@ describe('Full End-to-End Smartphone App Simulation', () => {
   afterAll(async () => {
     await dbPool.end();
     console.log('[Teardown] Cleaned up test resources.');
-    process.exit(0);
   });
 
   test('should simulate the entire workflow from experiment creation to BIDS download', async () => {

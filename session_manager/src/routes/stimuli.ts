@@ -4,6 +4,7 @@ import { dbPool } from '../lib/db';
 import { minioClient } from '../lib/minio';
 import { requireUser } from '../middleware/auth';
 import { config } from '../lib/config';
+import { resolveStimulusMime } from '../utils/mime';
 
 export const stimuliRouter = new Hono();
 
@@ -35,8 +36,8 @@ stimuliRouter.get('/download/:filename', requireUser(), async (c) => {
 
     const objectStream = await minioClient.getObject(config.MINIO_MEDIA_BUCKET, object_id);
 
-    const mimeType = filename.endsWith('.png') ? 'image/png' : 'image/jpeg';
-    c.header('Content-Type', mimeType);
+    c.header('Content-Type', resolveStimulusMime(filename, type));
+    c.header('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`);
 
     // ### <<< 修正点 >>> ###
     // Honoの stream.pipe() はストリームの型が合わないため使用しない。

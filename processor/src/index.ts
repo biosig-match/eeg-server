@@ -1,7 +1,7 @@
 import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib';
 import { Client as MinioClient } from 'minio';
 import { Pool } from 'pg';
-import { init as zstdInit, decompress as zstdDecompress } from '@bokuweb/zstd-wasm';
+import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm';
 import { v4 as uuidv4 } from 'uuid';
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@rabbitmq';
@@ -12,6 +12,8 @@ const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY || 'minioadmin';
 const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || 'minioadmin';
 const MINIO_USE_SSL = process.env.MINIO_USE_SSL === 'true';
 const MINIO_RAW_DATA_BUCKET = process.env.MINIO_RAW_DATA_BUCKET || 'raw-data';
+
+const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any;
 
 const RAW_DATA_EXCHANGE = 'raw_data_exchange';
 const PROCESSING_QUEUE = 'processing_queue';
@@ -123,10 +125,9 @@ async function processMessage(msg: ConsumeMessage | null) {
     );
 
     const decompressedData = zstdDecompress(payloadView);
+    const decompressedBuffer = Buffer.from(decompressedData);
 
-    const { deviceId, startTime, endTime } = extractMetadataFromPacket(
-      Buffer.from(decompressedData),
-    );
+    const { deviceId, startTime, endTime } = extractMetadataFromPacket(decompressedBuffer);
 
     // MinIO用のオブジェクトIDを生成
     const objectId = `raw/${userId}/start_tick=${startTime}/end_tick=${endTime}_${uuidv4()}.zst`;
