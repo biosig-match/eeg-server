@@ -1,11 +1,11 @@
-FROM node:20-slim
-WORKDIR /app
-COPY package*.json ./
+FROM oven/bun:1.2.23-slim
 
-# ★★★ 以下のコマンドを追加し、クリーンなインストールを保証 ★★★
-RUN rm -rf node_modules package-lock.json
+WORKDIR /usr/src/app
 
-RUN npm install
-COPY . .
-RUN npm run build
-CMD ["npm", "start"]
+COPY package.json bun.lock ./
+RUN bun install
+
+COPY ./src ./src
+
+EXPOSE 3000
+CMD ["bun", "run", "src/index.ts"]
