@@ -31,6 +31,8 @@ export async function startConsumer(): Promise<void> {
     });
     amqpConnection.on('close', () => {
       console.error('[RabbitMQ] Connection closed. Attempting to reconnect...');
+      amqpConnection = null;
+      amqpChannel = null;
       setTimeout(startConsumer, 5000); // Reconnect after 5 seconds
     });
 

@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { HTTPException } from 'hono/http-exception'
 import { eventCorrectorJobPayloadSchema } from '@/schemas/job'
-import { startConsumer, isChannelReady, publishEventCorrectionJob } from '@/lib/queue'
+import { startConsumer, isChannelReady, publishEventCorrectionJob, shutdownQueue } from '@/lib/queue'
 import { ensureMinioBucket, minioClient } from '@/lib/minio'
 import { dbPool } from '@/lib/db'
 import { config } from '@/lib/config'
@@ -26,14 +26,17 @@ app.get('/api/v1/health', async (c) => {
       return false
     })
 
-  return c.json({
-    status: rabbitConnected && dbConnected && minioConnected ? 'ok' : 'degraded',
-    rabbitmq_connected: rabbitConnected,
-    db_connected: dbConnected,
-    minio_connected: minioConnected,
-    queue: config.EVENT_CORRECTION_QUEUE,
-    timestamp: new Date().toISOString(),
-  })
+  return c.json(
+    {
+      status: rabbitConnected && dbConnected && minioConnected ? 'ok' : 'degraded',
+      rabbitmq_connected: rabbitConnected,
+      db_connected: dbConnected,
+      minio_connected: minioConnected,
+      queue: config.EVENT_CORRECTION_QUEUE,
+      timestamp: new Date().toISOString(),
+    },
+    rabbitConnected && dbConnected && minioConnected ? 200 : 503,
+  )
 })
 
 app.post('/api/v1/jobs', zValidator('json', eventCorrectorJobPayloadSchema), (c) => {
@@ -73,8 +76,12 @@ console.log(`🚀 Event Corrector HTTP interface listening on port ${port}`)
 
 void bootstrap()
 
-process.on('SIGINT', () => gracefulShutdown('SIGINT'))
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', (signal) => {
+  void gracefulShutdown(signal)
+})
+process.on('SIGTERM', (signal) => {
+  void gracefulShutdown(signal)
+})
 
 async function bootstrap() {
   try {
@@ -86,7 +93,15 @@ async function bootstrap() {
   }
 }
 
-function gracefulShutdown(signal: NodeJS.Signals) {
+async function gracefulShutdown(signal: NodeJS.Signals) {
   console.log(`\nReceived ${signal}. Shutting down gracefully...`)
-  dbPool.end().finally(() => process.exit(0))
+  try {
+    await shutdownQueue()
+    await dbPool.end()
+    console.log('✅ Graceful shutdown completed')
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error)
+  } finally {
+    process.exit(0)
+  }
 }

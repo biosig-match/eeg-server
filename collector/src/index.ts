@@ -4,16 +4,12 @@ import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 
-const {
-  RABBITMQ_URL = 'amqp://guest:guest@rabbitmq',
-  RAW_DATA_EXCHANGE = 'raw_data_exchange',
-  MEDIA_PROCESSING_QUEUE = 'media_processing_queue',
-  PORT = '3000',
-} = Bun.env
+import { config } from './lib/config'
 
 let amqpConnection: Connection | null = null
 let amqpChannel: Channel | null = null
 let lastConnectedAt: Date | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 const app = new Hono()
 
@@ -50,11 +46,26 @@ const mediaSchema = z
     }
   })
 
+function scheduleReconnect() {
+  if (reconnectTimer) {
+    return
+  }
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connectRabbitMQ()
+      .then(() => console.log('✅ [RabbitMQ] Reconnected.'))
+      .catch((error) => {
+        console.error('❌ [RabbitMQ] Reconnect failed:', error)
+        scheduleReconnect()
+      })
+  }, 5000)
+}
+
 async function setupChannel() {
   if (!amqpConnection) return
   amqpChannel = await amqpConnection.createChannel()
-  await amqpChannel.assertExchange(RAW_DATA_EXCHANGE, 'fanout', { durable: true })
-  await amqpChannel.assertQueue(MEDIA_PROCESSING_QUEUE, { durable: true })
+  await amqpChannel.assertExchange(config.RAW_DATA_EXCHANGE, 'fanout', { durable: true })
+  await amqpChannel.assertQueue(config.MEDIA_PROCESSING_QUEUE, { durable: true })
   console.log('✅ [RabbitMQ] Channel ready.')
 }
 
@@ -64,22 +75,22 @@ async function connectRabbitMQ() {
     try {
       attempt += 1
       console.log(`📡 [RabbitMQ] Connecting (attempt ${attempt})...`)
-      amqpConnection = await amqp.connect(RABBITMQ_URL)
+      amqpConnection = await amqp.connect(config.RABBITMQ_URL)
       amqpConnection.on('close', () => {
         console.error('❌ [RabbitMQ] Connection closed. Reconnecting...')
         amqpConnection = null
         amqpChannel = null
-        setTimeout(() => {
-          connectRabbitMQ().catch((error) =>
-            console.error('❌ [RabbitMQ] Reconnect failed:', error),
-          )
-        }, 5000)
+        scheduleReconnect()
       })
       amqpConnection.on('error', (error) => {
         console.error('❌ [RabbitMQ] Connection error:', error)
       })
       await setupChannel()
       lastConnectedAt = new Date()
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       console.log('✅ [RabbitMQ] Connected.')
       break
     } catch (error) {
@@ -99,13 +110,17 @@ function assertChannelOrThrow() {
 }
 
 app.get('/api/v1/health', (c) => {
-  return c.json({
-    status: 'ok',
-    service: 'collector-service',
-    rabbitmq_connected: !!amqpChannel,
-    last_connected_at: lastConnectedAt?.toISOString() ?? null,
-    timestamp: new Date().toISOString(),
-  })
+  const rabbitConnected = !!amqpChannel
+  return c.json(
+    {
+      status: rabbitConnected ? 'ok' : 'degraded',
+      service: 'collector-service',
+      rabbitmq_connected: rabbitConnected,
+      last_connected_at: lastConnectedAt?.toISOString() ?? null,
+      timestamp: new Date().toISOString(),
+    },
+    rabbitConnected ? 200 : 503,
+  )
 })
 
 app.post('/api/v1/data', zValidator('json', dataSchema), async (c) => {
@@ -122,7 +137,7 @@ app.post('/api/v1/data', zValidator('json', dataSchema), async (c) => {
     throw new HTTPException(400, { message: 'payload_base64 must be valid base64', cause: error })
   }
 
-  amqpChannel!.publish(RAW_DATA_EXCHANGE, '', binaryPayload, {
+  amqpChannel!.publish(config.RAW_DATA_EXCHANGE, '', binaryPayload, {
     persistent: true,
     headers: { user_id },
     timestamp: Date.now(),
@@ -162,7 +177,7 @@ app.post('/api/v1/media', async (c) => {
     ...(metadata.end_time_utc ? { end_time_utc: metadata.end_time_utc } : {}),
   }
 
-  amqpChannel!.sendToQueue(MEDIA_PROCESSING_QUEUE, fileBuffer, {
+  amqpChannel!.sendToQueue(config.MEDIA_PROCESSING_QUEUE, fileBuffer, {
     persistent: true,
     headers,
     timestamp: Date.now(),
@@ -192,13 +207,16 @@ app.notFound((c) => {
   return c.json(payload, 404)
 })
 
-Bun.serve({
-  port: Number(PORT),
-  fetch: app.fetch,
-})
+async function bootstrap() {
+  await connectRabbitMQ()
+  Bun.serve({
+    port: config.PORT,
+    fetch: app.fetch,
+  })
+  console.log(`🚀 Collector service is running on port ${config.PORT}`)
+}
 
-connectRabbitMQ().catch((error) => {
-  console.error('❌ [RabbitMQ] Initial connection failed:', error)
+bootstrap().catch((error) => {
+  console.error('❌ Bootstrap failed:', error)
+  process.exit(1)
 })
-
-console.log(`🚀 Collector service is running on port ${PORT}`)

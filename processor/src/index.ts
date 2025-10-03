@@ -8,35 +8,25 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { HTTPException } from 'hono/http-exception'
 
-const {
-  RABBITMQ_URL = 'amqp://guest:guest@rabbitmq',
-  DATABASE_URL = 'postgres://admin:password@db:5432/eeg_data',
-  MINIO_ENDPOINT = 'minio',
-  MINIO_PORT = '9000',
-  MINIO_ACCESS_KEY = 'minioadmin',
-  MINIO_SECRET_KEY = 'minioadmin',
-  MINIO_USE_SSL = 'false',
-  MINIO_RAW_DATA_BUCKET = 'raw-data',
-  PORT = '3010',
-} = Bun.env
+import { config } from './lib/config'
 
 const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any
-
-const RAW_DATA_EXCHANGE = 'raw_data_exchange'
-const PROCESSING_QUEUE = 'processing_queue'
 
 const HEADER_SIZE = 18
 const POINT_SIZE = 53
 
 let amqpConnection: Connection | null = null
 let amqpChannel: Channel | null = null
-const pgPool = new Pool({ connectionString: DATABASE_URL })
+let consumerTag: string | null = null
+let isConsuming = false
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+const pgPool = new Pool({ connectionString: config.DATABASE_URL })
 const minioClient = new MinioClient({
-  endPoint: MINIO_ENDPOINT,
-  port: parseInt(MINIO_PORT, 10),
-  useSSL: MINIO_USE_SSL === 'true',
-  accessKey: MINIO_ACCESS_KEY,
-  secretKey: MINIO_SECRET_KEY,
+  endPoint: config.MINIO_ENDPOINT,
+  port: config.MINIO_PORT,
+  useSSL: config.MINIO_USE_SSL,
+  accessKey: config.MINIO_ACCESS_KEY,
+  secretKey: config.MINIO_SECRET_KEY,
 })
 
 let lastRabbitConnectedAt: Date | null = null
@@ -105,16 +95,20 @@ app.notFound((c) =>
 )
 
 Bun.serve({
-  port: Number(PORT),
+  port: config.PORT,
   fetch: app.fetch,
 })
 
-console.log(`🚀 Processor service HTTP interface listening on port ${PORT}`)
+console.log(`🚀 Processor service HTTP interface listening on port ${config.PORT}`)
 
 void bootstrap()
 
-process.on('SIGINT', shutdown)
-process.on('SIGTERM', shutdown)
+process.on('SIGINT', (signal) => {
+  void shutdown(signal)
+})
+process.on('SIGTERM', (signal) => {
+  void shutdown(signal)
+})
 
 async function bootstrap() {
   try {
@@ -126,6 +120,25 @@ async function bootstrap() {
     console.error('❌ Processor bootstrap failed:', error)
     process.exit(1)
   }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) {
+    return
+  }
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    reconnectRabbitMQ().catch((error) => {
+      console.error('❌ [RabbitMQ] Reconnect failed:', error)
+      scheduleReconnect()
+    })
+  }, 5000)
+}
+
+async function reconnectRabbitMQ() {
+  await connectRabbitMQ()
+  await startConsumer()
+  console.log('✅ [RabbitMQ] Reconnected and consumer restarted')
 }
 
 async function ensureZstdReady() {
@@ -142,25 +155,27 @@ async function connectRabbitMQ() {
     attempt += 1
     try {
       console.log(`📡 [RabbitMQ] Connecting (attempt ${attempt})...`)
-      amqpConnection = await amqp.connect(RABBITMQ_URL)
+      amqpConnection = await amqp.connect(config.RABBITMQ_URL)
       amqpConnection.on('close', () => {
         console.error('❌ [RabbitMQ] Connection closed. Reconnecting...')
         amqpConnection = null
         amqpChannel = null
-        setTimeout(() => {
-          connectRabbitMQ().catch((error) =>
-            console.error('❌ [RabbitMQ] Reconnect failed:', error),
-          )
-        }, 5000)
+        isConsuming = false
+        consumerTag = null
+        scheduleReconnect()
       })
       amqpConnection.on('error', (error) => {
         console.error('❌ [RabbitMQ] Connection error:', error)
       })
       amqpChannel = await amqpConnection.createChannel()
-      await amqpChannel.assertExchange(RAW_DATA_EXCHANGE, 'fanout', { durable: true })
-      await amqpChannel.assertQueue(PROCESSING_QUEUE, { durable: true })
-      await amqpChannel.bindQueue(PROCESSING_QUEUE, RAW_DATA_EXCHANGE, '')
+      await amqpChannel.assertExchange(config.RAW_DATA_EXCHANGE, 'fanout', { durable: true })
+      await amqpChannel.assertQueue(config.PROCESSING_QUEUE, { durable: true })
+      await amqpChannel.bindQueue(config.PROCESSING_QUEUE, config.RAW_DATA_EXCHANGE, '')
       lastRabbitConnectedAt = new Date()
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       console.log('✅ [RabbitMQ] Channel ready.')
     } catch (error) {
       amqpConnection = null
@@ -176,17 +191,33 @@ async function startConsumer() {
   if (!amqpChannel) {
     throw new Error('RabbitMQ channel is not available')
   }
+  if (isConsuming) {
+    return
+  }
   amqpChannel.prefetch(1)
-  console.log(`🚀 Processor service waiting for messages in queue: "${PROCESSING_QUEUE}"`)
-  amqpChannel.consume(PROCESSING_QUEUE, processMessage)
+  const consumer = await amqpChannel.consume(config.PROCESSING_QUEUE, processMessage)
+  consumerTag = consumer.consumerTag
+  isConsuming = true
+  console.log(`🚀 Processor service waiting for messages in queue: "${config.PROCESSING_QUEUE}"`)
 }
 
-function shutdown(signal: NodeJS.Signals) {
+async function shutdown(signal: NodeJS.Signals) {
   console.log(`\nReceived ${signal}. Shutting down gracefully...`)
-  void amqpChannel?.close()
-  void amqpConnection?.close()
-  void pgPool.end()
-  process.exit(0)
+  try {
+    if (amqpChannel && consumerTag) {
+      await amqpChannel.cancel(consumerTag)
+      isConsuming = false
+      consumerTag = null
+    }
+    await amqpChannel?.close()
+    await amqpConnection?.close()
+    await pgPool.end()
+    console.log('✅ Graceful shutdown completed')
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error)
+  } finally {
+    process.exit(0)
+  }
 }
 
 function extractMetadataFromPacket(decompressedData: Buffer): {
@@ -271,7 +302,7 @@ async function processMessage(msg: ConsumeMessage | null) {
       'X-Device-Id': deviceId,
     }
     await minioClient.putObject(
-      MINIO_RAW_DATA_BUCKET,
+      config.MINIO_RAW_DATA_BUCKET,
       objectId,
       compressedPayload,
       compressedPayload.length,
@@ -301,12 +332,12 @@ async function processMessage(msg: ConsumeMessage | null) {
 }
 
 async function ensureMinioBucket() {
-  const bucketExists = await minioClient.bucketExists(MINIO_RAW_DATA_BUCKET)
+  const bucketExists = await minioClient.bucketExists(config.MINIO_RAW_DATA_BUCKET)
   if (!bucketExists) {
-    console.log(`[MinIO] バケット "${MINIO_RAW_DATA_BUCKET}" が存在しません。作成します...`)
-    await minioClient.makeBucket(MINIO_RAW_DATA_BUCKET)
-    console.log(`✅ [MinIO] バケット "${MINIO_RAW_DATA_BUCKET}" を作成しました。`)
+    console.log(`[MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" が存在しません。作成します...`)
+    await minioClient.makeBucket(config.MINIO_RAW_DATA_BUCKET)
+    console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" を作成しました。`)
   } else {
-    console.log(`✅ [MinIO] バケット "${MINIO_RAW_DATA_BUCKET}" はすでに存在します。`)
+    console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" はすでに存在します。`)
   }
 }
