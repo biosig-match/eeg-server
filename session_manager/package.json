@@ -21,6 +21,6 @@
     "@types/pg": "^8.11.6",
     "bun-types": "1.2.23",
     "dotenv": "^16.4.5",
-    "typescript": "^5.0.0"
+    "typescript": "^5.4.5"
   }
 }
