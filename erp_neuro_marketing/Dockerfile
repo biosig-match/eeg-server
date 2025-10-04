@@ -12,12 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# requirements.txtをコピーして依存関係をインストール
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# プロジェクトのメタデータをコピーして依存関係をインストール
+COPY pyproject.toml .
+RUN pip install --upgrade pip && pip install --no-cache-dir ".[erp_neuro_marketing]"
 
 # ソースコードをコピー
-COPY ./src /app/src
+COPY ./erp_neuro_marketing/src /app/src
 
 # サービスがリッスンするポート
 EXPOSE 8001

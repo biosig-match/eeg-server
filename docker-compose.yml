@@ -83,7 +83,9 @@ services:
       - eeg-network
 
   collector:
-    build: ./collector
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
     container_name: eeg_collector
     restart: unless-stopped
     depends_on:
@@ -95,7 +97,9 @@ services:
       - eeg-network
 
   processor:
-    build: ./processor
+    build:
+      context: .
+      dockerfile: processor/Dockerfile
     restart: unless-stopped
     depends_on:
       create-buckets:
@@ -117,7 +121,9 @@ services:
       - eeg-network
 
   media_processor:
-    build: ./media_processor
+    build:
+      context: .
+      dockerfile: media_processor/Dockerfile
     restart: unless-stopped
     depends_on:
       create-buckets:
@@ -139,7 +145,9 @@ services:
       - eeg-network
 
   realtime_analyzer:
-    build: ./realtime_analyzer
+    build:
+      context: .
+      dockerfile: realtime_analyzer/Dockerfile
     container_name: eeg_realtime_analyzer
     restart: unless-stopped
     command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'src.main:app'
@@ -172,7 +180,9 @@ services:
       - eeg-network
 
   session_manager:
-    build: ./session_manager
+    build:
+      context: .
+      dockerfile: session_manager/Dockerfile
     container_name: eeg_session_manager
     restart: unless-stopped
     depends_on:
@@ -206,7 +216,9 @@ services:
       - eeg-network
 
   stimulus_asset_processor:
-    build: ./stimulus_asset_processor
+    build:
+      context: .
+      dockerfile: stimulus_asset_processor/Dockerfile
     container_name: eeg_stimulus_asset_processor
     restart: unless-stopped
     depends_on:
@@ -235,7 +247,9 @@ services:
       - eeg-network
 
   auth_manager:
-    build: ./auth_manager
+    build:
+      context: .
+      dockerfile: auth_manager/Dockerfile
     container_name: eeg_auth_manager
     restart: unless-stopped
     depends_on:
@@ -251,7 +265,9 @@ services:
       - eeg-network
 
   data_linker:
-    build: ./data_linker
+    build:
+      context: .
+      dockerfile: data_linker/Dockerfile
     container_name: eeg_data_linker
     restart: unless-stopped
     depends_on:
@@ -273,7 +289,9 @@ services:
       - eeg-network
 
   event_corrector:
-    build: ./event_corrector
+    build:
+      context: .
+      dockerfile: event_corrector/Dockerfile
     restart: unless-stopped
     depends_on:
       db:
@@ -302,7 +320,9 @@ services:
       - eeg-network
 
   bids_exporter:
-    build: ./bids_exporter
+    build:
+      context: .
+      dockerfile: bids_exporter/Dockerfile
     restart: unless-stopped
     volumes:
       - bids_exports_volume:/export_data
@@ -325,7 +345,9 @@ services:
       - eeg-network
 
   erp_neuro_marketing:
-    build: ./erp_neuro_marketing
+    build:
+      context: .
+      dockerfile: erp_neuro_marketing/Dockerfile
     container_name: eeg_erp_neuro_marketing
     restart: unless-stopped
     depends_on:

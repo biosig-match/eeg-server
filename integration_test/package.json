@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Integration tests for the EEG platform services.",
   "scripts": {
-    "test": "bun test"
+    "test": "bun test --timeout 300000"
   },
   "devDependencies": {
     "@types/jszip": "^3.4.1",

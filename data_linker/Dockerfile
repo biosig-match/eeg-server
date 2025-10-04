@@ -2,10 +2,12 @@ FROM oven/bun:1.2.23-slim
 
 WORKDIR /usr/src/app
 
-COPY package.json bun.lock ./
+COPY bun.lock ./
+COPY data_linker/package.json ./
 RUN bun install
 
-COPY ./src ./src
-COPY ./tsconfig.json ./tsconfig.json
+COPY tsconfig.base.json /usr/src/
+COPY data_linker/tsconfig.json ./
+COPY data_linker/src ./src
 
 CMD ["bun", "run", "src/main.ts"]
