@@ -1,3 +1,27 @@
+x-common-logging: &common-logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_DB: ${POSTGRES_DB}
+  POSTGRES_HOST: ${POSTGRES_HOST}
+
+x-rabbitmq-env: &rabbitmq-env
+  RABBITMQ_USER: ${RABBITMQ_USER}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+  RABBITMQ_HOST: ${RABBITMQ_HOST}
+
+x-minio-env: &minio-env
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+  MINIO_PORT: ${MINIO_PORT}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+  MINIO_USE_SSL: ${MINIO_USE_SSL}
+
 services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -94,9 +118,22 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      <<: *rabbitmq-env
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging: *common-logging
 
   processor:
     build:
@@ -104,6 +141,7 @@ services:
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: processor
+    container_name: eeg_processor
     restart: unless-stopped
     depends_on:
       create-buckets:
@@ -113,16 +151,24 @@ services:
       db:
         condition: service_healthy
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
-      - MINIO_PORT=${MINIO_PORT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
-      - MINIO_RAW_DATA_BUCKET=${MINIO_RAW_DATA_BUCKET}
+      <<: [*rabbitmq-env, *postgres-env, *minio-env]
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      MINIO_RAW_DATA_BUCKET: ${MINIO_RAW_DATA_BUCKET}
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3010/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging: *common-logging
 
   media_processor:
     build:
@@ -130,6 +176,7 @@ services:
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: media_processor
+    container_name: eeg_media_processor
     restart: unless-stopped
     depends_on:
       create-buckets:
@@ -139,16 +186,24 @@ services:
       db:
         condition: service_healthy
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
-      - MINIO_PORT=${MINIO_PORT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
-      - MINIO_MEDIA_BUCKET=${MINIO_MEDIA_BUCKET}
+      <<: [*rabbitmq-env, *postgres-env, *minio-env]
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      MINIO_MEDIA_BUCKET: ${MINIO_MEDIA_BUCKET}
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3020/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging: *common-logging
 
   realtime_analyzer:
     build:
@@ -164,6 +219,18 @@ services:
         condition: service_healthy
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:5002/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging: *common-logging
 
   ingress:
     build: ./nginx
@@ -186,6 +253,12 @@ services:
         condition: service_started
     networks:
       - eeg-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging: *common-logging
 
   session_manager:
     build:
@@ -203,27 +276,28 @@ services:
       auth_manager:
         condition: service_started
     environment:
-      - PORT=3000
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - RABBITMQ_USER=${RABBITMQ_USER}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
-      - RABBITMQ_HOST=${RABBITMQ_HOST}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
-      - MINIO_PORT=${MINIO_PORT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
-      - MINIO_MEDIA_BUCKET=${MINIO_MEDIA_BUCKET}
-      - DATA_LINKER_QUEUE=${DATA_LINKER_QUEUE}
-      - STIMULUS_ASSET_QUEUE=${STIMULUS_ASSET_QUEUE}
-      - AUTH_MANAGER_URL=${AUTH_MANAGER_URL}
+      <<: [*postgres-env, *rabbitmq-env, *minio-env]
+      PORT: 3000
+      MINIO_MEDIA_BUCKET: ${MINIO_MEDIA_BUCKET}
+      DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
+      STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
+      AUTH_MANAGER_URL: ${AUTH_MANAGER_URL}
       # BIDS ExporterサービスのURLを環境変数として渡す
-      - BIDS_EXPORTER_URL=${BIDS_EXPORTER_URL}
+      BIDS_EXPORTER_URL: ${BIDS_EXPORTER_URL}
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
+    logging: *common-logging
 
   stimulus_asset_processor:
     build:
@@ -241,22 +315,23 @@ services:
       create-buckets:
         condition: service_completed_successfully
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - RABBITMQ_USER=${RABBITMQ_USER}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
-      - RABBITMQ_HOST=${RABBITMQ_HOST}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
-      - MINIO_PORT=${MINIO_PORT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
-      - MINIO_MEDIA_BUCKET=${MINIO_MEDIA_BUCKET}
-      - STIMULUS_ASSET_QUEUE=${STIMULUS_ASSET_QUEUE}
+      <<: [*postgres-env, *rabbitmq-env, *minio-env]
+      MINIO_MEDIA_BUCKET: ${MINIO_MEDIA_BUCKET}
+      STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3050/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
+    logging: *common-logging
 
   auth_manager:
     build:
@@ -270,13 +345,22 @@ services:
       db:
         condition: service_healthy
     environment:
-      - PORT=3000
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_HOST=${POSTGRES_HOST}
+      <<: *postgres-env
+      PORT: 3000
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    logging: *common-logging
 
   data_linker:
     build:
@@ -292,17 +376,23 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - RABBITMQ_USER=${RABBITMQ_USER}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
-      - RABBITMQ_HOST=${RABBITMQ_HOST}
-      - DATA_LINKER_QUEUE=${DATA_LINKER_QUEUE}
-      - EVENT_CORRECTION_QUEUE=${EVENT_CORRECTION_QUEUE}
+      <<: [*postgres-env, *rabbitmq-env]
+      DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
+      EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3030/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
+    logging: *common-logging
 
   event_corrector:
     build:
@@ -310,6 +400,7 @@ services:
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: event_corrector
+    container_name: eeg_event_corrector
     restart: unless-stopped
     depends_on:
       db:
@@ -319,23 +410,24 @@ services:
       create-buckets:
         condition: service_completed_successfully
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - RABBITMQ_USER=${RABBITMQ_USER}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
-      - RABBITMQ_HOST=${RABBITMQ_HOST}
-      - EVENT_CORRECTION_QUEUE=${EVENT_CORRECTION_QUEUE}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
-      - MINIO_PORT=${MINIO_PORT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
-      - MINIO_RAW_DATA_BUCKET=${MINIO_RAW_DATA_BUCKET}
-      - SAMPLE_RATE=256
+      <<: [*postgres-env, *rabbitmq-env, *minio-env]
+      EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
+      MINIO_RAW_DATA_BUCKET: ${MINIO_RAW_DATA_BUCKET}
+      SAMPLE_RATE: 256
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3040/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
+    logging: *common-logging
 
   bids_exporter:
     build:
@@ -343,7 +435,9 @@ services:
       dockerfile: docker/Dockerfile.python
       args:
         SERVICE_NAME: bids_exporter
+    container_name: eeg_bids_exporter
     restart: unless-stopped
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     volumes:
       - bids_exports_volume:/export_data
     depends_on:
@@ -352,17 +446,27 @@ services:
       create-buckets:
         condition: service_completed_successfully
     environment:
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}:${MINIO_PORT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
-      - MINIO_RAW_DATA_BUCKET=${MINIO_RAW_DATA_BUCKET}
-      - MINIO_MEDIA_BUCKET=${MINIO_MEDIA_BUCKET}
-      - MINIO_BIDS_EXPORTS_BUCKET=${MINIO_BIDS_EXPORTS_BUCKET}
-      - EXPORT_DATA_PATH=/export_data
+      <<: [*postgres-env, *minio-env]
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}:${MINIO_PORT}
+      MINIO_RAW_DATA_BUCKET: ${MINIO_RAW_DATA_BUCKET}
+      MINIO_MEDIA_BUCKET: ${MINIO_MEDIA_BUCKET}
+      MINIO_BIDS_EXPORTS_BUCKET: ${MINIO_BIDS_EXPORTS_BUCKET}
+      EXPORT_DATA_PATH: /export_data
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    logging: *common-logging
 
   erp_neuro_marketing:
     build:
@@ -372,6 +476,7 @@ services:
         SERVICE_NAME: erp_neuro_marketing
     container_name: eeg_erp_neuro_marketing
     restart: unless-stopped
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8001
     depends_on:
       db:
         condition: service_healthy
@@ -384,12 +489,25 @@ services:
     volumes:
       - bids_exports_volume:/export_data
     environment:
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
-      - BIDS_EXPORTER_URL=http://bids_exporter:8000
-      - AUTH_MANAGER_URL=http://auth_manager:3000
-      - SHARED_VOLUME_PATH=/export_data
+      <<: *postgres-env
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      BIDS_EXPORTER_URL: http://bids_exporter:8000
+      AUTH_MANAGER_URL: http://auth_manager:3000
+      SHARED_VOLUME_PATH: /export_data
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8001/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 768M
+    logging: *common-logging
 
 volumes:
   pg_data:

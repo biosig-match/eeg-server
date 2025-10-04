@@ -5,6 +5,7 @@
 
 # Test files and outputs
 integration_test/
+!integration_test/package.json
 **/test/
 **/*.test.ts
 **/*.test.py
