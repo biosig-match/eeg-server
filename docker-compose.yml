@@ -142,7 +142,7 @@ services:
     build: ./realtime_analyzer
     container_name: eeg_realtime_analyzer
     restart: unless-stopped
-    command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'main:app'
+    command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'src.main:app'
     depends_on:
       rabbitmq:
         condition: service_healthy

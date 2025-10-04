@@ -8,4 +8,4 @@ RUN bun install
 COPY ./src ./src
 COPY ./tsconfig.json ./tsconfig.json
 
-CMD ["bun", "run", "src/index.ts"]
+CMD ["bun", "run", "src/main.ts"]
