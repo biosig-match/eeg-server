@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "Session Manager service for the EEG platform",
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun --watch --env-file=../.env run src/index.ts",
+    "start": "bun run src/main.ts",
+    "dev": "bun --watch --env-file=../.env run src/main.ts",
     "test:e2e": "bun --env-file=../.env.test run test/standalone_test.ts"
   },
   "dependencies": {

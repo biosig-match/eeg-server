@@ -3,16 +3,19 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "lib": ["ESNext"],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx",
-    "types": ["bun-types"]
+    "types": ["bun-types"],
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["./*"]
+    }
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "test"]
+  "exclude": ["node_modules", "dist", "test"]
 }

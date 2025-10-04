@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "A service to manage authorization (participants and roles) for experiments.",
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun --watch --env-file=../.env run src/index.ts"
+    "start": "bun run src/main.ts",
+    "dev": "bun --watch --env-file=../.env run src/main.ts"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.2.2",

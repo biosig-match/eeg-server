@@ -142,7 +142,7 @@ services:
     build: ./realtime_analyzer
     container_name: eeg_realtime_analyzer
     restart: unless-stopped
-    command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'main:app'
+    command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'src.main:app'
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -200,7 +200,6 @@ services:
       - DATA_LINKER_QUEUE=${DATA_LINKER_QUEUE}
       - STIMULUS_ASSET_QUEUE=${STIMULUS_ASSET_QUEUE}
       - AUTH_MANAGER_URL=${AUTH_MANAGER_URL}
-      # ### <<< 修正点 >>> ###
       # BIDS ExporterサービスのURLを環境変数として渡す
       - BIDS_EXPORTER_URL=${BIDS_EXPORTER_URL}
     networks:
