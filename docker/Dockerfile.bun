@@ -1,0 +1,23 @@
+FROM oven/bun:1.2.23-slim AS builder
+ARG SERVICE_NAME
+
+WORKDIR /app
+
+# workspaces対応: ルートのpackage.jsonとロックファイル
+COPY package.json bun.lock ./
+COPY ${SERVICE_NAME}/package.json ./${SERVICE_NAME}/
+
+RUN bun install --frozen-lockfile
+
+FROM oven/bun:1.2.23-slim
+ARG SERVICE_NAME
+
+WORKDIR /app
+
+# node_modulesはルートから
+COPY --from=builder /app/node_modules ./node_modules
+COPY ${SERVICE_NAME}/src ./${SERVICE_NAME}/src
+COPY ${SERVICE_NAME}/tsconfig.json ./${SERVICE_NAME}/
+
+WORKDIR /app/${SERVICE_NAME}
+CMD ["bun", "run", "src/main.ts"]

@@ -85,7 +85,9 @@ services:
   collector:
     build:
       context: .
-      dockerfile: collector/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: collector
     container_name: eeg_collector
     restart: unless-stopped
     depends_on:
@@ -99,7 +101,9 @@ services:
   processor:
     build:
       context: .
-      dockerfile: processor/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: processor
     restart: unless-stopped
     depends_on:
       create-buckets:
@@ -123,7 +127,9 @@ services:
   media_processor:
     build:
       context: .
-      dockerfile: media_processor/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: media_processor
     restart: unless-stopped
     depends_on:
       create-buckets:
@@ -147,7 +153,9 @@ services:
   realtime_analyzer:
     build:
       context: .
-      dockerfile: realtime_analyzer/Dockerfile
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_NAME: realtime_analyzer
     container_name: eeg_realtime_analyzer
     restart: unless-stopped
     command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'src.main:app'
@@ -182,7 +190,9 @@ services:
   session_manager:
     build:
       context: .
-      dockerfile: session_manager/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: session_manager
     container_name: eeg_session_manager
     restart: unless-stopped
     depends_on:
@@ -218,7 +228,9 @@ services:
   stimulus_asset_processor:
     build:
       context: .
-      dockerfile: stimulus_asset_processor/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: stimulus_asset_processor
     container_name: eeg_stimulus_asset_processor
     restart: unless-stopped
     depends_on:
@@ -249,7 +261,9 @@ services:
   auth_manager:
     build:
       context: .
-      dockerfile: auth_manager/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: auth_manager
     container_name: eeg_auth_manager
     restart: unless-stopped
     depends_on:
@@ -267,7 +281,9 @@ services:
   data_linker:
     build:
       context: .
-      dockerfile: data_linker/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: data_linker
     container_name: eeg_data_linker
     restart: unless-stopped
     depends_on:
@@ -291,7 +307,9 @@ services:
   event_corrector:
     build:
       context: .
-      dockerfile: event_corrector/Dockerfile
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: event_corrector
     restart: unless-stopped
     depends_on:
       db:
@@ -322,7 +340,9 @@ services:
   bids_exporter:
     build:
       context: .
-      dockerfile: bids_exporter/Dockerfile
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_NAME: bids_exporter
     restart: unless-stopped
     volumes:
       - bids_exports_volume:/export_data
@@ -347,7 +367,9 @@ services:
   erp_neuro_marketing:
     build:
       context: .
-      dockerfile: erp_neuro_marketing/Dockerfile
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_NAME: erp_neuro_marketing
     container_name: eeg_erp_neuro_marketing
     restart: unless-stopped
     depends_on:

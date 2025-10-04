@@ -17,6 +17,7 @@ app.use(
 );
 
 // Routes
+app.get('/health', (c) => c.json({ status: 'ok' }));
 app.get('/', (c) => c.text('Auth Manager Service is running.'));
 app.route('/api/v1/auth', authRouter);
 

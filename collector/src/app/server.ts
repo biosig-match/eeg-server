@@ -111,6 +111,8 @@ function assertChannelOrThrow() {
   }
 }
 
+app.get('/health', (c) => c.json({ status: 'ok' }))
+
 app.get('/api/v1/health', (c) => {
   const rabbitConnected = !!amqpChannel
   return c.json(
