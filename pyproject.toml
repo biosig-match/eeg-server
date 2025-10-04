@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.25"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "eeg-server"
@@ -53,6 +53,9 @@ analysis = [
   "mne-bids==0.15",
   "matplotlib",
 ]
+
+[tool.setuptools]
+py-modules = []
 
 [tool.ruff]
 # Python 3.11 throughout the project (see Dockerfiles)
