@@ -1,0 +1,15 @@
+{
+  "name": "eeg-server",
+  "private": true,
+  "workspaces": [
+    "auth_manager",
+    "collector",
+    "data_linker",
+    "event_corrector",
+    "integration_test",
+    "media_processor",
+    "processor",
+    "session_manager",
+    "stimulus_asset_processor"
+  ]
+}

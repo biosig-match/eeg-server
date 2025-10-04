@@ -26,7 +26,7 @@
 | **Ingress**           | `eeg_ingress`            | **API ゲートウェイ (Nginx)**。HTTP リクエストを受け付け、適切なサービスに振り分ける。                                                                     |
 | **Collector**         | `eeg_collector`          | **データ受信 API (Node.js)**。HTTP 経由でセンサーデータとメディアファイルを受信し、一切の処理をせず即座に RabbitMQ へ転送する。                           |
 | **Processor**         | `eeg-server-processor-*` | **データ処理ワーカー (Python)**。RabbitMQ から生データを受信し、解凍・パース・タイムスタンプ計算を行い、PostgreSQL に格納する。2 つのレプリカで並列実行。 |
-| **BIDS Manager**      | `eeg_bids_manager`       | **実験管理・BIDS エクスポート API (Python/Flask)**。実験の開始/終了、イベント CSV の登録、BIDS エクスポートの非同期実行を管理する。                       |
+| **BIDS Exporter**     | `bids_exporter`          | **実験管理・BIDS エクスポート API (Python/FastAPI)**。実験の開始/終了、イベント登録、BIDS エクスポートの非同期実行を管理する。                            |
 | **Realtime Analyzer** | `eeg_realtime_analyzer`  | **リアルタイム解析 API (Python/Flask)**。処理済みの脳波データを購読し、PSD や同期度を計算してアプリに結果を提供する。                                     |
 | **Database**          | `eeg_db`                 | **PostgreSQL データベース (TimescaleDB 拡張)**。実験メタデータ、セッション情報、イベント情報、メディアファイル情報を永続化する。                          |
 | **Message Queue**     | `eeg_rabbitmq`           | **メッセージブローカー (RabbitMQ)**。サービス間のデータの受け渡しを非同期で行い、システム全体の安定性を担保する。                                         |
@@ -198,7 +198,7 @@ Ingress (Nginx) は以下のエンドポイントを公開します。
 
 ### ⚠️ 現在利用不可なエンドポイント
 
-以下の BIDS Manager サービスのエンドポイントは、nginx のルーティング設定が未完成のため、外部からアクセスできません：
+以下の BIDS Exporter サービスのエンドポイントは、nginx のルーティング設定が未完成のため、外部からアクセスできません：
 
 - `/api/v1/experiments` (実験管理)
 - `/api/v1/experiments/{experiment_id}/events` (イベント登録)
@@ -222,27 +222,28 @@ Ingress (Nginx) は以下のエンドポイントを公開します。
    cd eeg-server
    ```
 
-2. **.env ファイルの作成:**
-   プロジェクトのルートディレクトリに`.env`という名前のファイルを新規作成し、以下の内容を記述します。
+2. **開発ツールのインストール:**
+   プロジェクトは `.mise.toml` で Bun / Python / uv のバージョンを管理しています。以下を実行して必要ツールを導入してください。
 
-   ```ini
-   # RabbitMQ Settings
-   RABBITMQ_USER=guest
-   RABBITMQ_PASSWORD=guest
-   RABBITMQ_HOST=rabbitmq
-   RABBITMQ_MGMT_PORT=15672
-
-   # PostgreSQL/TimescaleDB Settings
-   POSTGRES_USER=admin
-   POSTGRES_PASSWORD=password
-   POSTGRES_DB=eeg_data
-   POSTGRES_HOST=db
-
-   # Nginx Port
-   NGINX_PORT=8080
+   ```bash
+   mise install
    ```
 
-3. **コンテナのビルドと起動:**
+3. **JavaScript 依存のインストール (Bun Workspaces):**
+   ルートの `package.json` にワークスペースが定義されているため、1 回の `bun install` で全サービス分の依存パッケージがセットアップされます。
+
+   ```bash
+   bun install
+   ```
+
+4. **.env ファイルの作成:**
+   プロジェクトのルートディレクトリの`.env.example`を`.env`にコピーします。
+
+   ```bash
+   cp .env.example .env
+   ```
+
+5. **コンテナのビルドと起動:**
    以下のコマンドで、全サービスの Docker イメージをビルドし、バックグラウンドで起動します。
 
    ```bash
@@ -324,25 +325,27 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
    - VSCode のインタプリタは `.venv/bin/python` を選択してください（`.vscode/settings.json` に既定値を設定済み）。
      この .venv はエディタ解析専用であり、Docker 実行には影響しません。
 
+   - スクリプト内では `pyproject.toml` の optional dependencies（`.[bids_exporter]`, `.[realtime_analyzer]`, `.[erp_neuro_marketing]`, `.[analysis]`）を uv 経由でまとめてインストールします。各 Python サービスの補完や型チェックが `.venv` で利用可能になります。
+
    - 補足（$ROOT_DIR について）: 開発用シェルスクリプトは、スクリプト自身の場所からプロジェクトルートを判定して `cd` するため、
      どのディレクトリから実行しても同じように動きます（`.venv` の作成場所や相対パスの解決が安定します）。
      常に `eeg-server` 直下で実行する運用でも問題ありません（例: `cd eeg-server && bash tools/dev/setup_py_dev_venv.sh`）。
 
-3. Node/TypeScript ツール（collector ディレクトリ）
+3. Node/TypeScript ツール（Bun Workspaces）
 
-   - Node.js は LTS (>=18) を推奨
-
-   - エディタ用モジュール解決（必須・実行は Docker に非依存）
-
-     VSCode が `import` を解決できるよう、`collector` にローカルの `node_modules` を用意します。
-     ランタイムは Docker 側で完結するため、これはエディタ専用の導入です（`.gitignore` 済み）。
+   - `bun install` はワークスペース一括対応のため、追加でサービス直下に `npm install` 等を行う必要はありません。
+   - VSCode や他エディタもルート `node_modules` を参照して型補完が機能します。
+   - サービス固有のスクリプトは `bun run --filter <service> <script>` 形式で実行できます。
 
      ```bash
-     cd collector
-     npm install --no-package-lock
+     # 例: collector の dev サーバー
+     bun run --filter collector dev
+
+     # 例: integration_test のテスト
+     bun run --filter integration_test test
      ```
 
-     補足: `.vscode/settings.json` で `typescript.tsdk` を `collector/node_modules/typescript/lib` に設定済みです。
+   - ローカルで追加依存を導入したい場合も、ルートで `bun add <pkg> --filter <service>` を利用すると、該当サービスの `package.json` のみに反映されます。
 
    - Lint/Format のための開発依存（CLI 実行や VSCode の ESLint 拡張で必要）
 
@@ -457,6 +460,6 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 
 ## 7\. 今後の改良点 (Future Improvements)
 
-- **`onset`計算の厳密化:** 現在`bids_manager`は DB からトリガ信号のタイムスタンプを取得していますが、より高精度な ERP 解析のためには、サンプリング周波数を考慮してサンプル番号レベルでの`onset`計算を実装することが望ましいです。
+- **`onset`計算の厳密化:** 現在`bids_exporter`は DB からトリガ信号のタイムスタンプを取得していますが、より高精度な ERP 解析のためには、サンプリング周波数を考慮してサンプル番号レベルでの`onset`計算を実装することが望ましいです。
 - **認証・認可:** 現状は認証機能がありません。本番運用では、API Gateway レベルで JWT 認証などを導入する必要があります。
 - **MUSE 2 対応:** `processor`サービスに、MUSE 2 など他デバイスからの非圧縮データを受信した際の処理分岐を追加します。

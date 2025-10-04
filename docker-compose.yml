@@ -139,7 +139,9 @@ services:
       - eeg-network
 
   realtime_analyzer:
-    build: ./realtime_analyzer
+    build:
+      context: .
+      dockerfile: realtime_analyzer/Dockerfile
     container_name: eeg_realtime_analyzer
     restart: unless-stopped
     command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'src.main:app'
@@ -302,7 +304,9 @@ services:
       - eeg-network
 
   bids_exporter:
-    build: ./bids_exporter
+    build:
+      context: .
+      dockerfile: bids_exporter/Dockerfile
     restart: unless-stopped
     volumes:
       - bids_exports_volume:/export_data
@@ -325,7 +329,9 @@ services:
       - eeg-network
 
   erp_neuro_marketing:
-    build: ./erp_neuro_marketing
+    build:
+      context: .
+      dockerfile: erp_neuro_marketing/Dockerfile
     container_name: eeg_erp_neuro_marketing
     restart: unless-stopped
     depends_on:

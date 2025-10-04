@@ -36,10 +36,31 @@ else
   exit 1
 fi
 
-uv pip install --python "$PY" \
-  -r bids_manager/requirements.txt \
-  -r processor/requirements.txt \
-  -r realtime_analyzer/requirements.txt
+EXTRAS=(bids_exporter realtime_analyzer erp_neuro_marketing analysis)
+
+mapfile -t EXTRA_DEPS < <(
+  python - <<'PY'
+import tomllib
+
+extras = [
+    "bids_exporter",
+    "realtime_analyzer",
+    "erp_neuro_marketing",
+    "analysis",
+]
+
+with open("pyproject.toml", "rb") as f:
+    data = tomllib.load(f)
+
+for extra in extras:
+    for dep in data["project"]["optional-dependencies"][extra]:
+        print(dep)
+PY
+)
+
+if [[ ${#EXTRA_DEPS[@]} -gt 0 ]]; then
+  uv pip install --python "$PY" "${EXTRA_DEPS[@]}"
+fi
 
 echo "[setup] Installing common dev tools"
 uv pip install --python "$PY" -U ruff pyright

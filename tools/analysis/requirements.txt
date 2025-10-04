@@ -1,4 +1,0 @@
-# Requirements for the BIDS data analysis script
-mne>=1.6
-mne-bids==0.14
-matplotlib
