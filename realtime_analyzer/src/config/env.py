@@ -4,9 +4,7 @@ import os
 
 def _get_env(name: str, default: str | None = None, *, required: bool = False) -> str:
   value = os.getenv(name, default)
-  if required and (value is None or value == ""):
-    raise RuntimeError(f"Environment variable '{name}' is required")
-  if value is None:
+  if value is None or (required and value == ""):
     raise RuntimeError(f"Environment variable '{name}' is required")
   return value
 

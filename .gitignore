@@ -36,3 +36,5 @@ integration_test/test-output
 .DS_Store
 .venv/
 bench-results/
+**/dist/
+**/build/

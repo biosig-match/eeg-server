@@ -79,10 +79,10 @@ stimuliRouter.get('/:experiment_id/download/:filename', requireAuth('participant
     c.header('Content-Type', resolveStimulusMime(filename, type));
     c.header('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`);
 
-    // ### <<< 修正点 >>> ###
-    // Honoの stream.pipe() はストリームの型が合わないため使用しない。
-    // 代わりに、Node.jsのストリームを for await...of でチャンクごとに読み取り、
-    // Honoのストリームに手動で書き込む方式に変更する。
+    /**
+     * Hono の stream.pipe() は Node.js の Readable とは互換性がないため、
+     * for await...of でチャンクを読み取り Hono のストリームへ手動で書き込む。
+     */
     return stream(c, async (stream) => {
       for await (const chunk of objectStream) {
         await stream.write(chunk);

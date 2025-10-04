@@ -150,8 +150,6 @@ export const requireAuth = (requiredRole: ParticipantRole) => {
   });
 };
 
-// ### <<< 修正点 >>> ###
-// 新しいミドルウェアを追加
 /**
  * ユーザーが認証済みであるか（X-User-Idヘッダーが存在するか）のみを検証するシンプルなミドルウェア
  */

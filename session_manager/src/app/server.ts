@@ -57,7 +57,6 @@ app.get('/api/v1/health', async (c) => {
 app.route('/api/v1/experiments', experimentsRouter);
 app.route('/api/v1/sessions', sessionsRouter);
 app.route('/api/v1/calibrations', calibrationsRouter);
-// ### <<< 修正点 >>> ###
 // 新しいAPIエンドポイントを登録
 app.route('/api/v1/stimuli', stimuliRouter);
 

@@ -4,9 +4,7 @@ import os
 
 def _get_env(name: str, default: str | None = None, *, required: bool = False) -> str:
   value = os.getenv(name, default)
-  if required and (value is None or value == ""):
-    raise RuntimeError(f"Environment variable '{name}' is required")
-  if value is None:
+  if value is None or (required and value == ""):
     raise RuntimeError(f"Environment variable '{name}' is required")
   return value
 
@@ -16,11 +14,6 @@ def _get_bool(name: str, default: bool = False) -> bool:
   if raw is None:
     return default
   return raw.lower() in {"1", "true", "yes", "on"}
-
-
-def _get_optional(name: str, default: str | None = None) -> str | None:
-  value = os.getenv(name, default)
-  return value
 
 
 @dataclass(frozen=True)
