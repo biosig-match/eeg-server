@@ -1,18 +1,11 @@
-# Stage 1: Install dependencies
-FROM oven/bun:1 as base
+FROM oven/bun:1.2.23-slim
+
 WORKDIR /usr/src/app
-COPY package.json bun.lock .
-RUN bun install --frozen-lockfile
 
-# Stage 2: Build the application
-FROM base as build
-COPY . .
-# If you had a build step, it would go here.
-# For this service, we run directly from source.
+COPY package.json bun.lock ./
+RUN bun install
 
-# Stage 3: Run the application
-FROM base
-COPY --from=build /usr/src/app/node_modules ./node_modules
-COPY --from=build /usr/src/app/src ./src
-COPY --from=build /usr/src/app/tsconfig.json .
+COPY ./src ./src
+COPY ./tsconfig.json ./tsconfig.json
+
 CMD ["bun", "run", "src/index.ts"]

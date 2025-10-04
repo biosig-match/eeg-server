@@ -19,7 +19,7 @@
   "devDependencies": {
     "@types/amqplib": "^0.10.5",
     "@types/pg": "^8.11.6",
-    "bun-types": "latest",
+    "bun-types": "1.2.23",
     "dotenv": "^16.4.5",
     "typescript": "^5.0.0"
   }

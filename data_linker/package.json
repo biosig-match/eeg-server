@@ -2,13 +2,14 @@
   "name": "data-linker",
   "version": "1.0.0",
   "description": "Asynchronously links raw data objects to sessions and normalizes timestamps.",
-  "main": "src/index.ts",
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "bun --watch src/index.ts"
+    "dev": "bun --watch --env-file=../.env run src/index.ts"
   },
   "dependencies": {
+    "@hono/zod-validator": "^0.2.2",
     "amqplib": "^0.10.4",
+    "hono": "^4.4.11",
     "pg": "^8.12.0",
     "zod": "^3.23.8"
   },

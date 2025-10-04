@@ -1,12 +1,11 @@
-FROM node:20-slim
+FROM oven/bun:1.2.23-slim
 
-WORKDIR /app
+WORKDIR /usr/src/app
 
-COPY package*.json ./
-RUN npm install
+COPY package.json bun.lock ./
+RUN bun install
 
-COPY . .
-RUN npm run build
+COPY ./src ./src
+COPY ./tsconfig.json ./tsconfig.json
 
-CMD ["node", "dist/index.js"]
-
+CMD ["bun", "run", "src/index.ts"]

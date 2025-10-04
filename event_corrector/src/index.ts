@@ -1,24 +1,107 @@
-import { startConsumer } from '@/lib/queue';
-import { dbPool } from './lib/db';
-import { ensureMinioBucket } from './lib/minio';
+import { Hono } from 'hono'
+import { zValidator } from '@hono/zod-validator'
+import { HTTPException } from 'hono/http-exception'
+import { eventCorrectorJobPayloadSchema } from '@/schemas/job'
+import { startConsumer, isChannelReady, publishEventCorrectionJob, shutdownQueue } from '@/lib/queue'
+import { ensureMinioBucket, minioClient } from '@/lib/minio'
+import { dbPool } from '@/lib/db'
+import { config } from '@/lib/config'
 
-console.log('🚀 Event Corrector Service starting...');
+const app = new Hono()
 
-async function main() {
+app.get('/api/v1/health', async (c) => {
+  const rabbitConnected = isChannelReady()
+  const dbConnected = await dbPool
+    .query('SELECT 1')
+    .then(() => true)
+    .catch((error) => {
+      console.error('❌ [EventCorrector] DB health check failed:', error)
+      return false
+    })
+  const minioConnected = await minioClient
+    .bucketExists(config.MINIO_RAW_DATA_BUCKET)
+    .then(() => true)
+    .catch((error) => {
+      console.error('❌ [EventCorrector] MinIO health check failed:', error)
+      return false
+    })
+
+  return c.json(
+    {
+      status: rabbitConnected && dbConnected && minioConnected ? 'ok' : 'degraded',
+      rabbitmq_connected: rabbitConnected,
+      db_connected: dbConnected,
+      minio_connected: minioConnected,
+      queue: config.EVENT_CORRECTION_QUEUE,
+      timestamp: new Date().toISOString(),
+    },
+    rabbitConnected && dbConnected && minioConnected ? 200 : 503,
+  )
+})
+
+app.post('/api/v1/jobs', zValidator('json', eventCorrectorJobPayloadSchema), (c) => {
+  if (!isChannelReady()) {
+    throw new HTTPException(503, { message: 'Message broker is unavailable' })
+  }
+  const job = c.req.valid('json')
+  publishEventCorrectionJob(job)
+  return c.json({ status: 'queued' }, 202)
+})
+
+app.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    return err.getResponse()
+  }
+  console.error('❌ [EventCorrector] Unhandled error:', err)
+  return c.json({ error: 'Internal Server Error' }, 500)
+})
+
+app.notFound((c) =>
+  c.json(
+    {
+      message: `The requested endpoint ${c.req.method} ${c.req.path} does not exist.`,
+    },
+    404,
+  ),
+)
+
+const port = Number(Bun.env.PORT ?? '3040')
+
+Bun.serve({
+  port,
+  fetch: app.fetch,
+})
+
+console.log(`🚀 Event Corrector HTTP interface listening on port ${port}`)
+
+void bootstrap()
+
+process.on('SIGINT', (signal) => {
+  void gracefulShutdown(signal)
+})
+process.on('SIGTERM', (signal) => {
+  void gracefulShutdown(signal)
+})
+
+async function bootstrap() {
   try {
-    // 起動時に依存サービスへの接続を確認
-    await dbPool.query('SELECT 1');
-    console.log('✅ [PostgreSQL] Database connection successful.');
-
-    // MinIOバケットの存在を確認し、なければ作成する
-    await ensureMinioBucket();
-
-    // 全ての接続が成功したらコンシューマを開始
-    await startConsumer();
+    await ensureMinioBucket()
+    await startConsumer()
   } catch (error) {
-    console.error('❌ Failed to initialize service dependencies. Shutting down.', error);
-    process.exit(1);
+    console.error('❌ Event Corrector bootstrap failed:', error)
+    process.exit(1)
   }
 }
 
-main();
+async function gracefulShutdown(signal: NodeJS.Signals) {
+  console.log(`\nReceived ${signal}. Shutting down gracefully...`)
+  try {
+    await shutdownQueue()
+    await dbPool.end()
+    console.log('✅ Graceful shutdown completed')
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error)
+  } finally {
+    process.exit(0)
+  }
+}

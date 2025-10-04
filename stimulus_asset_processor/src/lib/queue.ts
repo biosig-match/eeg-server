@@ -1,48 +1,163 @@
-import amqp from 'amqplib';
+import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib';
 import { config } from './config';
 import { handleMessage } from '../services/processor';
+import { stimulusAssetJobPayloadSchema } from '../schemas/job';
+import type { StimulusAssetJobPayload } from '../schemas/job';
 
-/**
- * RabbitMQに接続し、指定されたキューのコンシューマ（メッセージ受信者）を開始します。
- */
-export async function startConsumer(): Promise<void> {
-  try {
-    const connection = await amqp.connect(config.RABBITMQ_URL);
-    const channel = await connection.createChannel();
+let amqpConnection: Connection | null = null;
+let amqpChannel: Channel | null = null;
+let consumerTag: string | null = null;
+let isConsuming = false;
+let lastConnectedAt: Date | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    connection.on('error', (err) => {
-      console.error('[RabbitMQ] Connection error:', err.message);
+function scheduleReconnect() {
+  if (reconnectTimer) {
+    return;
+  }
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startConsumer().catch((error) => {
+      console.error('❌ [RabbitMQ] Reconnect failed.', error);
+      scheduleReconnect();
     });
-    connection.on('close', () => {
-      console.error('[RabbitMQ] Connection closed. Attempting to reconnect...');
-      setTimeout(startConsumer, 5000);
-    });
+  }, 5000);
+}
 
-    const queue = config.STIMULUS_ASSET_QUEUE;
-    await channel.assertQueue(queue, { durable: true });
+async function connectRabbitMQ(): Promise<void> {
+  let attempt = 0;
+  while (!amqpChannel) {
+    attempt += 1;
+    try {
+      console.log(`📡 [RabbitMQ] Connecting (attempt ${attempt})...`);;
+      amqpConnection = await amqp.connect(config.RABBITMQ_URL);
+      amqpConnection.on('error', (err) => {
+        console.error('[RabbitMQ] Connection error:', err);
+      });
+      amqpConnection.on('close', () => {
+        console.error('❌ [RabbitMQ] Connection closed. Attempting to reconnect...');
+        amqpConnection = null;
+        amqpChannel = null;
+        isConsuming = false;
+        consumerTag = null;
+        scheduleReconnect();
+      });
 
-    // 一度に処理するメッセージを1つに制限
-    channel.prefetch(1);
+      amqpChannel = await amqpConnection.createChannel();
+      amqpChannel.on('error', (err) => {
+        console.error('[RabbitMQ] Channel error:', err);
+      });
+      amqpChannel.on('close', () => {
+        console.warn('[RabbitMQ] Channel closed. Attempting to reconnect...');
+        amqpChannel = null;
+        isConsuming = false;
+        consumerTag = null;
+        scheduleReconnect();
+      });
 
-    console.log(`[RabbitMQ] Waiting for messages in queue: "${queue}". To exit press CTRL+C`);
-
-    channel.consume(queue, async (msg) => {
-      if (msg !== null) {
-        try {
-          // メインの処理ロジックを呼び出す
-          await handleMessage(msg.content);
-          // 処理が成功したので、メッセージをキューから削除
-          channel.ack(msg);
-        } catch (error) {
-          // 処理が失敗したので、メッセージをキューに戻す
-          console.error(`[RabbitMQ] Failed to process message. Re-queueing...`);
-          channel.nack(msg, false, true);
-        }
+      await amqpChannel.assertQueue(config.STIMULUS_ASSET_QUEUE, { durable: true });
+      amqpChannel.prefetch(1);
+      lastConnectedAt = new Date();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
+      console.log('✅ [RabbitMQ] Channel ready.');;
+    } catch (error) {
+      amqpConnection = null;
+      amqpChannel = null;
+      console.error('❌ [RabbitMQ] Failed to establish queue connection.', error);
+      const backoff = Math.min(30000, 2 ** attempt * 1000);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
+}
+
+function onMessage(msg: ConsumeMessage | null, channel: Channel) {
+  if (!msg) {
+    return;
+  }
+
+  handleMessage(msg.content)
+    .then(() => {
+      channel.ack(msg);
+    })
+    .catch((error) => {
+      console.error('[RabbitMQ] Failed to process message. Re-queueing...', error);
+      channel.nack(msg, false, true);
     });
+}
+
+export async function startConsumer(): Promise<void> {
+  if (!amqpChannel) {
+    await connectRabbitMQ();
+  }
+  if (!amqpChannel) {
+    throw new Error('RabbitMQ channel is not available');
+  }
+  if (isConsuming) {
+    return;
+  }
+  const consumer = await amqpChannel.consume(
+    config.STIMULUS_ASSET_QUEUE,
+    (msg) => onMessage(msg, amqpChannel!),
+  );
+  consumerTag = consumer.consumerTag;
+  isConsuming = true;
+  console.log(
+    `🚀 Stimulus Asset Processor is waiting for messages in queue: "${config.STIMULUS_ASSET_QUEUE}"`,
+  );
+}
+
+export function isChannelReady(): boolean {
+  return !!amqpChannel;
+}
+
+export function lastRabbitConnection(): Date | null {
+  return lastConnectedAt;
+}
+
+export function publishStimulusAssetJob(job: StimulusAssetJobPayload): void {
+  if (!amqpChannel) {
+    throw new Error('RabbitMQ channel is not initialized.');
+  }
+  const payload = stimulusAssetJobPayloadSchema.parse(job);
+  amqpChannel.sendToQueue(
+    config.STIMULUS_ASSET_QUEUE,
+    Buffer.from(JSON.stringify(payload)),
+    { persistent: true },
+  );
+}
+
+export async function shutdownQueue(): Promise<void> {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  try {
+    if (amqpChannel && consumerTag) {
+      await amqpChannel.cancel(consumerTag);
+    }
   } catch (error) {
-    console.error('❌ [RabbitMQ] Failed to start consumer.', error);
-    // 5秒後に再試行
-    setTimeout(startConsumer, 5000);
+    console.error('[RabbitMQ] Error cancelling consumer during shutdown.', error);
+  } finally {
+    consumerTag = null;
+    isConsuming = false;
+  }
+
+  try {
+    await amqpChannel?.close();
+  } catch (error) {
+    console.error('[RabbitMQ] Error closing channel during shutdown.', error);
+  } finally {
+    amqpChannel = null;
+  }
+
+  try {
+    await amqpConnection?.close();
+  } catch (error) {
+    console.error('[RabbitMQ] Error closing connection during shutdown.', error);
+  } finally {
+    amqpConnection = null;
   }
 }

@@ -1,7 +1,11 @@
-# Use the official Bun image as a base
-FROM oven/bun:1-slim
+FROM oven/bun:1.2.23-slim
+
 WORKDIR /usr/src/app
+
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun install
+
 COPY ./src ./src
+COPY ./tsconfig.json ./tsconfig.json
+
 CMD ["bun", "run", "src/index.ts"]
