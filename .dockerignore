@@ -4,8 +4,9 @@
 **/__pycache__
 
 # Test files and outputs
-integration_test/test-output/
-integration_test/**/*.test.ts
+# Note: integration_test/package.json is intentionally included for Bun workspace
+integration_test/test-output/      # Exclude test results
+integration_test/**/*.test.ts      # Exclude test source files
 **/test/
 **/*.test.ts
 **/*.test.py

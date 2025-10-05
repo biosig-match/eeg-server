@@ -30,9 +30,21 @@ const minioClient = new MinioClient({
 const app = new Hono()
 
 app.get('/health', async (c) => {
-  const rabbitStatus = !!amqpChannel
-  const dbStatus = await pgPool.query('SELECT 1').then(() => true).catch(() => false)
-  const minioStatus = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET).then(() => true).catch(() => false)
+  const rabbitStatus = (() => {
+    if (!amqpChannel) {
+      console.error('❌ [MediaProcessor] RabbitMQ health check failed: channel not available')
+      return false
+    }
+    return true
+  })()
+  const dbStatus = await pgPool.query('SELECT 1').then(() => true).catch((error) => {
+    console.error('❌ [MediaProcessor] DB health check failed:', error)
+    return false
+  })
+  const minioStatus = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET).then(() => true).catch((error) => {
+    console.error('❌ [MediaProcessor] MinIO health check failed:', error)
+    return false
+  })
   const allOk = rabbitStatus && dbStatus && minioStatus
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },

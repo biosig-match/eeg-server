@@ -17,9 +17,20 @@ app.use(
   }),
 );
 
+// Health check helper function
+async function checkDbConnection(): Promise<boolean> {
+  return dbPool
+    .query('SELECT 1')
+    .then(() => true)
+    .catch((error) => {
+      console.error('❌ [AuthManager] DB health check failed:', error);
+      return false;
+    });
+}
+
 // Routes
 app.get('/health', async (c) => {
-  const dbStatus = await dbPool.query('SELECT 1').then(() => true).catch(() => false);
+  const dbStatus = await checkDbConnection();
   return c.json(
     { status: dbStatus ? 'ok' : 'unhealthy' },
     dbStatus ? 200 : 503,
@@ -28,13 +39,7 @@ app.get('/health', async (c) => {
 app.get('/', (c) => c.text('Auth Manager Service is running.'));
 
 app.get('/api/v1/health', async (c) => {
-  const dbStatus = await dbPool
-    .query('SELECT 1')
-    .then(() => true)
-    .catch((error) => {
-      console.error('❌ [AuthManager] DB health check failed:', error);
-      return false;
-    });
+  const dbStatus = await checkDbConnection();
 
   return c.json(
     {

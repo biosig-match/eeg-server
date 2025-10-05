@@ -30,8 +30,17 @@ app.use(
 
 app.get('/', (c) => c.text('Session Manager Service is running.'));
 app.get('/health', async (c) => {
-  const rabbitReady = isQueueReady();
-  const dbReady = await dbPool.query('SELECT 1').then(() => true).catch(() => false);
+  const rabbitReady = (() => {
+    const ready = isQueueReady();
+    if (!ready) {
+      console.error('❌ [SessionManager] RabbitMQ health check failed: queue not ready');
+    }
+    return ready;
+  })();
+  const dbReady = await dbPool.query('SELECT 1').then(() => true).catch((error) => {
+    console.error('❌ [SessionManager] DB health check failed:', error);
+    return false;
+  });
   const allOk = rabbitReady && dbReady;
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },

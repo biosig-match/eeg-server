@@ -35,8 +35,17 @@ let zstdInitialized = false
 const app = new Hono()
 
 app.get('/health', async (c) => {
-  const rabbitStatus = !!amqpChannel
-  const dbStatus = await pgPool.query('SELECT 1').then(() => true).catch(() => false)
+  const rabbitStatus = (() => {
+    if (!amqpChannel) {
+      console.error('❌ [Processor] RabbitMQ health check failed: channel not available')
+      return false
+    }
+    return true
+  })()
+  const dbStatus = await pgPool.query('SELECT 1').then(() => true).catch((error) => {
+    console.error('❌ [Processor] DB health check failed:', error)
+    return false
+  })
   const allOk = rabbitStatus && dbStatus
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },

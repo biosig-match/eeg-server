@@ -16,9 +16,21 @@ import { config } from '../config/env'
 const app = new Hono()
 
 app.get('/health', async (c) => {
-  const rabbitConnected = isChannelReady();
-  const dbConnected = await dbPool.query('SELECT 1').then(() => true).catch(() => false);
-  const minioConnected = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET).then(() => true).catch(() => false);
+  const rabbitConnected = (() => {
+    const ready = isChannelReady();
+    if (!ready) {
+      console.error('❌ [StimulusAssetProcessor] RabbitMQ health check failed: channel not ready');
+    }
+    return ready;
+  })();
+  const dbConnected = await dbPool.query('SELECT 1').then(() => true).catch((error) => {
+    console.error('❌ [StimulusAssetProcessor] DB health check failed:', error);
+    return false;
+  });
+  const minioConnected = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET).then(() => true).catch((error) => {
+    console.error('❌ [StimulusAssetProcessor] MinIO health check failed:', error);
+    return false;
+  });
   const allOk = rabbitConnected && dbConnected && minioConnected;
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },
