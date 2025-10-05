@@ -29,7 +29,16 @@ const minioClient = new MinioClient({
 
 const app = new Hono()
 
-app.get('/health', (c) => c.json({ status: 'ok' }))
+app.get('/health', async (c) => {
+  const rabbitStatus = !!amqpChannel
+  const dbStatus = await pgPool.query('SELECT 1').then(() => true).catch(() => false)
+  const minioStatus = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET).then(() => true).catch(() => false)
+  const allOk = rabbitStatus && dbStatus && minioStatus
+  return c.json(
+    { status: allOk ? 'ok' : 'unhealthy' },
+    allOk ? 200 : 503,
+  )
+})
 
 const mediaMetadataSchema = z
   .object({

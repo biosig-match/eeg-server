@@ -8,7 +8,22 @@ import { config } from '../config/env'
 
 const app = new Hono()
 
-app.get('/health', (c) => c.json({ status: 'ok' }))
+app.get('/health', async (c) => {
+  const rabbitConnected = (() => {
+    try {
+      const channel = getAmqpChannel()
+      return !!channel
+    } catch (error) {
+      return false
+    }
+  })()
+  const dbConnected = await dbPool.query('SELECT 1').then(() => true).catch(() => false)
+  const allOk = rabbitConnected && dbConnected
+  return c.json(
+    { status: allOk ? 'ok' : 'unhealthy' },
+    allOk ? 200 : 503,
+  )
+})
 
 app.get('/api/v1/health', async (c) => {
   const rabbitConnected = (() => {

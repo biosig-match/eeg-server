@@ -3,6 +3,7 @@ import { logger } from 'hono/logger';
 import { cors } from 'hono/cors';
 import { config } from '../config/env';
 import { authRouter } from './routes/auth';
+import { dbPool } from '../infrastructure/db';
 
 const app = new Hono();
 
@@ -17,8 +18,36 @@ app.use(
 );
 
 // Routes
-app.get('/health', (c) => c.json({ status: 'ok' }));
+app.get('/health', async (c) => {
+  const dbStatus = await dbPool.query('SELECT 1').then(() => true).catch(() => false);
+  return c.json(
+    { status: dbStatus ? 'ok' : 'unhealthy' },
+    dbStatus ? 200 : 503,
+  );
+});
 app.get('/', (c) => c.text('Auth Manager Service is running.'));
+
+app.get('/api/v1/health', async (c) => {
+  const dbStatus = await dbPool
+    .query('SELECT 1')
+    .then(() => true)
+    .catch((error) => {
+      console.error('❌ [AuthManager] DB health check failed:', error);
+      return false;
+    });
+
+  return c.json(
+    {
+      status: dbStatus ? 'ok' : 'degraded',
+      db_connected: dbStatus,
+      service: 'auth-manager',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+    },
+    dbStatus ? 200 : 503,
+  );
+});
+
 app.route('/api/v1/auth', authRouter);
 
 // Error Handler

@@ -29,7 +29,15 @@ app.use(
 );
 
 app.get('/', (c) => c.text('Session Manager Service is running.'));
-app.get('/health', (c) => c.json({ status: 'ok' }));
+app.get('/health', async (c) => {
+  const rabbitReady = isQueueReady();
+  const dbReady = await dbPool.query('SELECT 1').then(() => true).catch(() => false);
+  const allOk = rabbitReady && dbReady;
+  return c.json(
+    { status: allOk ? 'ok' : 'unhealthy' },
+    allOk ? 200 : 503,
+  );
+});
 
 app.get('/api/v1/health', async (c) => {
   const rabbitReady = isQueueReady();
