@@ -29,7 +29,24 @@ app.use(
 );
 
 app.get('/', (c) => c.text('Session Manager Service is running.'));
-app.get('/health', (c) => c.json({ status: 'ok' }));
+app.get('/health', async (c) => {
+  const rabbitReady = (() => {
+    const ready = isQueueReady();
+    if (!ready) {
+      console.error('❌ [SessionManager] RabbitMQ health check failed: queue not ready');
+    }
+    return ready;
+  })();
+  const dbReady = await dbPool.query('SELECT 1').then(() => true).catch((error) => {
+    console.error('❌ [SessionManager] DB health check failed:', error);
+    return false;
+  });
+  const allOk = rabbitReady && dbReady;
+  return c.json(
+    { status: allOk ? 'ok' : 'unhealthy' },
+    allOk ? 200 : 503,
+  );
+});
 
 app.get('/api/v1/health', async (c) => {
   const rabbitReady = isQueueReady();

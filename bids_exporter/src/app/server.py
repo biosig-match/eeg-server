@@ -1,8 +1,9 @@
+import asyncio
 import os
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from minio.error import S3Error
 
@@ -35,9 +36,21 @@ async def startup_event():
         # os._exit(1)
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
-async def health_check():
+async def health_check(response: Response):
     """A simple endpoint to confirm the service is running for health checks."""
-    return HealthResponse(status="ok")
+    try:
+        # MinIO接続チェック
+        loop = asyncio.get_event_loop()
+        minio_ok = await loop.run_in_executor(
+            None, lambda: minio_client.bucket_exists(BIDS_BUCKET)
+        )
+        if not minio_ok:
+            response.status_code = 503
+            return HealthResponse(status="unhealthy")
+        return HealthResponse(status="ok")
+    except Exception:
+        response.status_code = 503
+        return HealthResponse(status="unhealthy")
 
 @app.post("/api/v1/experiments/{experiment_id}/export", response_model=ExportResponse, status_code=202)
 async def start_export(experiment_id: UUID, background_tasks: BackgroundTasks):

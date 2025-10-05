@@ -33,6 +33,7 @@ user_data_buffers: dict[str, np.ndarray] = defaultdict(lambda: np.array([]))
 analysis_lock = threading.Lock()
 buffer_lock = threading.Lock()
 threads_started = False
+rabbitmq_connected_event = threading.Event()
 
 mne_info = mne.create_info(ch_names=CHANNEL_NAMES, sfreq=settings.sample_rate, ch_types="eeg")
 try:
@@ -114,6 +115,7 @@ def rabbitmq_consumer() -> None:
         try:
             connection = pika.BlockingConnection(pika.URLParameters(settings.rabbitmq_url))
             channel = connection.channel()
+            rabbitmq_connected_event.set()
             channel.exchange_declare(
                 exchange="raw_data_exchange", exchange_type="fanout", durable=True
             )
@@ -171,6 +173,7 @@ def rabbitmq_consumer() -> None:
             print("🚀 リアルタイム解析サービスが起動し、圧縮生データの受信待機中です。")
             channel.start_consuming()
         except pika.exceptions.AMQPConnectionError:
+            rabbitmq_connected_event.clear()
             print("RabbitMQへの接続に失敗... 5秒後に再試行します。")
             time.sleep(5)
         except Exception as exc:  # pragma: no cover - logging purpose only
@@ -180,7 +183,10 @@ def rabbitmq_consumer() -> None:
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    return jsonify({"status": "ok"})
+    is_connected = rabbitmq_connected_event.is_set()
+    status_code = 200 if is_connected else 503
+    status = "ok" if is_connected else "unhealthy"
+    return jsonify({"status": status}), status_code
 
 
 @app.route("/api/v1/users/<user_id>/analysis", methods=["GET"])

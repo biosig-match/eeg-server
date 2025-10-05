@@ -111,7 +111,19 @@ function assertChannelOrThrow() {
   }
 }
 
-app.get('/health', (c) => c.json({ status: 'ok' }))
+app.get('/health', (c) => {
+  const rabbitConnected = (() => {
+    if (!amqpChannel) {
+      console.error('❌ [Collector] RabbitMQ health check failed: channel not available')
+      return false
+    }
+    return true
+  })()
+  return c.json(
+    { status: rabbitConnected ? 'ok' : 'unhealthy' },
+    rabbitConnected ? 200 : 503,
+  )
+})
 
 app.get('/api/v1/health', (c) => {
   const rabbitConnected = !!amqpChannel

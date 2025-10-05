@@ -34,7 +34,24 @@ let zstdInitialized = false
 
 const app = new Hono()
 
-app.get('/health', (c) => c.json({ status: 'ok' }))
+app.get('/health', async (c) => {
+  const rabbitStatus = (() => {
+    if (!amqpChannel) {
+      console.error('❌ [Processor] RabbitMQ health check failed: channel not available')
+      return false
+    }
+    return true
+  })()
+  const dbStatus = await pgPool.query('SELECT 1').then(() => true).catch((error) => {
+    console.error('❌ [Processor] DB health check failed:', error)
+    return false
+  })
+  const allOk = rabbitStatus && dbStatus
+  return c.json(
+    { status: allOk ? 'ok' : 'unhealthy' },
+    allOk ? 200 : 503,
+  )
+})
 
 const inspectSchema = z.object({
   payload_base64: z.string().min(1, 'payload_base64 is required'),

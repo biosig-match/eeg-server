@@ -14,7 +14,28 @@ import { config } from '../config/env'
 
 const app = new Hono()
 
-app.get('/health', (c) => c.json({ status: 'ok' }))
+app.get('/health', async (c) => {
+  const rabbitConnected = (() => {
+    const ready = isChannelReady()
+    if (!ready) {
+      console.error('❌ [EventCorrector] RabbitMQ health check failed: channel not ready')
+    }
+    return ready
+  })()
+  const dbConnected = await dbPool.query('SELECT 1').then(() => true).catch((error) => {
+    console.error('❌ [EventCorrector] DB health check failed:', error)
+    return false
+  })
+  const minioConnected = await minioClient.bucketExists(config.MINIO_RAW_DATA_BUCKET).then(() => true).catch((error) => {
+    console.error('❌ [EventCorrector] MinIO health check failed:', error)
+    return false
+  })
+  const allOk = rabbitConnected && dbConnected && minioConnected
+  return c.json(
+    { status: allOk ? 'ok' : 'unhealthy' },
+    allOk ? 200 : 503,
+  )
+})
 
 app.get('/api/v1/health', async (c) => {
   const rabbitConnected = isChannelReady()
