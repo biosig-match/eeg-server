@@ -1,2 +1,41 @@
+# Dependencies
 **/node_modules
+**/.venv
+**/__pycache__
+
+# Test files and outputs
+integration_test/
+!integration_test/package.json
+**/test/
+**/*.test.ts
+**/*.test.py
 integration_test/test-output
+session_manager/test/dummy_assets
+
+# Documentation
+**/*.md
+!README.md
+biosig-match-docs/
+
+# Development files
+.git
+.gitignore
+.vscode
+.env
+.env.*
+**/.DS_Store
+
+# Build outputs
+**/dist/
+**/build/
+bench-results/
+
+# Logs and caches
+*.log
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+
+# Project outputs
+bids_output/

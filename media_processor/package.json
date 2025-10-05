@@ -17,8 +17,6 @@
     "@types/amqplib": "^0.10.5",
     "@types/minio": "^7.1.1",
     "@types/node": "^20.14.2",
-    "@types/pg": "^8.11.6",
-    "bun-types": "1.2.23",
-    "typescript": "^5.4.5"
+    "@types/pg": "^8.11.6"
   }
 }

@@ -48,11 +48,7 @@ erp_neuro_marketing = [
   "numpy==1.26.4",
   "openai==1.40.0",
 ]
-analysis = [
-  "mne>=1.6",
-  "mne-bids==0.15",
-  "matplotlib",
-]
+analysis = ["mne>=1.6", "mne-bids==0.15", "matplotlib"]
 
 [tool.setuptools]
 py-modules = []
@@ -98,11 +94,7 @@ include = [
   "erp_neuro_marketing/src",
   "tools/analysis",
 ]
-exclude = [
-  "**/.venv/**",
-  "bids_output/**",
-  "**/__pycache__/**",
-]
+exclude = ["**/.venv/**", "bids_output/**", "**/__pycache__/**"]
 
 # Reduce noise from third-party libraries without type stubs
 reportMissingTypeStubs = "none"

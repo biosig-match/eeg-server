@@ -6,9 +6,7 @@
     "test": "bun test --timeout 300000"
   },
   "devDependencies": {
-    "@types/jszip": "^3.4.1",
-    "bun-types": "1.2.23",
-    "typescript": "^5.4.5"
+    "@types/jszip": "^3.4.1"
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",

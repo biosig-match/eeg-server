@@ -11,5 +11,9 @@
     "processor",
     "session_manager",
     "stimulus_asset_processor"
-  ]
+  ],
+  "devDependencies": {
+    "bun-types": "1.2.23",
+    "typescript": "^5.4.5"
+  }
 }

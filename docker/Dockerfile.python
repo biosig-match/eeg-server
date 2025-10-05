@@ -1,0 +1,40 @@
+FROM python:3.11-slim AS builder
+
+ARG SERVICE_NAME
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev curl libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Copy project configuration
+COPY pyproject.toml ./
+
+# Install dependencies using uv
+ENV UV_SYSTEM_PYTHON=1
+RUN uv pip install --no-cache ".[${SERVICE_NAME}]"
+
+FROM python:3.11-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl libpq5 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv in final stage
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy service source code
+ARG SERVICE_NAME
+COPY ${SERVICE_NAME}/src ./src
+
+EXPOSE 8000

@@ -29,6 +29,8 @@ const minioClient = new MinioClient({
 
 const app = new Hono()
 
+app.get('/health', (c) => c.json({ status: 'ok' }))
+
 const mediaMetadataSchema = z
   .object({
     user_id: z.string().min(1, 'user_id is required'),

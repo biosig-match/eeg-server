@@ -29,6 +29,7 @@ app.use(
 );
 
 app.get('/', (c) => c.text('Session Manager Service is running.'));
+app.get('/health', (c) => c.json({ status: 'ok' }));
 
 app.get('/api/v1/health', async (c) => {
   const rabbitReady = isQueueReady();

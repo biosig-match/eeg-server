@@ -34,6 +34,8 @@ let zstdInitialized = false
 
 const app = new Hono()
 
+app.get('/health', (c) => c.json({ status: 'ok' }))
+
 const inspectSchema = z.object({
   payload_base64: z.string().min(1, 'payload_base64 is required'),
 })

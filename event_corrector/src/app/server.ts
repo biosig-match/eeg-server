@@ -14,6 +14,8 @@ import { config } from '../config/env'
 
 const app = new Hono()
 
+app.get('/health', (c) => c.json({ status: 'ok' }))
+
 app.get('/api/v1/health', async (c) => {
   const rabbitConnected = isChannelReady()
   const dbConnected = await dbPool
