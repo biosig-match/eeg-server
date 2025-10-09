@@ -7,6 +7,7 @@ import { compress, init as initZstd } from '@bokuweb/zstd-wasm';
 import JSZip from 'jszip';
 import { Buffer } from 'buffer';
 import neatCSV from 'neat-csv';
+import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_corrector/src/domain/services/trigger_timestamps';
 
 const BASE_URL = 'http://localhost:8080/api/v1';
 const DATABASE_URL = 'postgres://admin:password@localhost:5432/eeg_data';
@@ -105,9 +106,15 @@ interface WorkflowContext {
   bidsArchiveEntries?: string[];
   zip?: JSZip;
   zipBuffer?: Buffer;
+  bidsZipPath?: string;
+  bidsExtractedDir?: string;
   rawDataObjects?: RawDataObjectRow[];
   calibCorrectedCount?: number;
   mainCorrectedCount?: number;
+  calibRawObjectCount?: number;
+  mainRawObjectCount?: number;
+  calibLinkedObjectsCount?: number;
+  mainLinkedObjectsCount?: number;
   erpAnalysisStatus?: number;
   erpAnalysis?: ErpAnalysisResponse;
 }
@@ -189,11 +196,12 @@ function createMockBinaryPayload(
   for (let i = 0; i < numSamples; i++) {
     // EEG/EMG/EOG Signals
     for (let ch = 0; ch < numChannels; ch++) {
+      const isTriggerChannel = ch === triggerChannelIndex;
+      const eventValue = triggerEvents[i];
+      const baseValue = isTriggerChannel ? 0 : 2048 + ch;
       // トリガーチャンネルで、かつイベントが存在する場合、その値を書き込む
-      buffer.writeInt16LE(
-        ch === triggerChannelIndex && triggerEvents[i] ? triggerEvents[i] : 2048 + ch,
-        offset,
-      );
+      const value = isTriggerChannel ? eventValue ?? 0 : baseValue;
+      buffer.writeInt16LE(value, offset);
       offset += 2;
     }
     // Accel + Gyro (dummy data)
@@ -205,6 +213,39 @@ function createMockBinaryPayload(
   }
   return buffer;
 }
+
+describe('Trigger Extraction Utility', () => {
+  test('detects triggers that span raw data object boundaries without duplicating events', () => {
+    const samplingRate = MOCK_CUSTOM_EEG_DEVICE.samplingRate;
+    const numSamplesPerPayload = 4;
+    const chunkDurationMs = Math.round((numSamplesPerPayload / samplingRate) * 1000);
+    const bridgeValue = 7;
+
+    const payloads = [
+      {
+        buffer: createMockBinaryPayload(MOCK_CUSTOM_EEG_DEVICE, numSamplesPerPayload, {
+          [numSamplesPerPayload - 1]: bridgeValue,
+        }),
+        startTimeMs: 0,
+        samplingRate,
+      },
+      {
+        buffer: createMockBinaryPayload(MOCK_CUSTOM_EEG_DEVICE, numSamplesPerPayload, {
+          0: bridgeValue,
+        }),
+        startTimeMs: chunkDurationMs,
+        samplingRate,
+      },
+    ];
+
+    const triggers = parsePayloadsAndExtractTriggerTimestampsUs(payloads);
+    expect(triggers).toHaveLength(1);
+
+    const usPerSample = 1_000_000 / samplingRate;
+    const expectedTimestampUs = BigInt(Math.round((numSamplesPerPayload - 1) * usPerSample));
+    expect(triggers[0]).toBe(expectedTimestampUs);
+  });
+});
 
 async function resetDatabase() {
   await dbPool.query(
@@ -266,6 +307,23 @@ async function waitForRowCount(
     await sleep(1000);
   }
   throw new Error(`Timed out waiting for ${expected} rows in ${table} where ${conditions}`);
+}
+
+async function extractZipArchive(zipArchive: JSZip, destinationDir: string) {
+  await fs.rm(destinationDir, { recursive: true, force: true });
+  await fs.mkdir(destinationDir, { recursive: true });
+
+  const entries = Object.values(zipArchive.files);
+  for (const entry of entries) {
+    const targetPath = path.join(destinationDir, entry.name);
+    if (entry.dir) {
+      await fs.mkdir(targetPath, { recursive: true });
+      continue;
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    const content = await entry.async('nodebuffer');
+    await fs.writeFile(targetPath, content);
+  }
 }
 
 async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext> {
@@ -427,6 +485,47 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
     console.log(`    ✅ EventCorrector completed.`);
   }
 
+  if (!ctx.calibSession || !ctx.mainSession) {
+    throw new Error('Session metadata is missing from workflow context.');
+  }
+
+  const [
+    calibRawObjectCount,
+    mainRawObjectCount,
+    calibLinkedObjectsCount,
+    mainLinkedObjectsCount,
+  ] = await Promise.all([
+    dbPool
+      .query<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM raw_data_objects WHERE session_id = $1`,
+        [ctx.calibSession.id],
+      )
+      .then((res) => Number(res.rows[0]?.count ?? 0)),
+    dbPool
+      .query<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM raw_data_objects WHERE session_id = $1`,
+        [ctx.mainSession.id],
+      )
+      .then((res) => Number(res.rows[0]?.count ?? 0)),
+    dbPool
+      .query<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM session_object_links WHERE session_id = $1`,
+        [ctx.calibSession.id],
+      )
+      .then((res) => Number(res.rows[0]?.count ?? 0)),
+    dbPool
+      .query<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM session_object_links WHERE session_id = $1`,
+        [ctx.mainSession.id],
+      )
+      .then((res) => Number(res.rows[0]?.count ?? 0)),
+  ]);
+
+  ctx.calibRawObjectCount = calibRawObjectCount;
+  ctx.mainRawObjectCount = mainRawObjectCount;
+  ctx.calibLinkedObjectsCount = calibLinkedObjectsCount;
+  ctx.mainLinkedObjectsCount = mainLinkedObjectsCount;
+
   console.log('\n--- 📦 [7/8] BIDSエクスポートの実行と権限テスト ---');
   if (!ctx.experimentId) {
     throw new Error('Experiment ID was not set');
@@ -461,6 +560,15 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
   ctx.bidsArchiveEntries = Object.keys(zip.files);
   ctx.zip = zip;
   console.log(`✅ BIDS archive downloaded and contains ${ctx.bidsArchiveEntries.length} files.`);
+  if (ctx.bidsTaskId) {
+    const zipOutputPath = path.join(TEST_OUTPUT_DIR, `bids_task_${ctx.bidsTaskId}.zip`);
+    await fs.writeFile(zipOutputPath, ctx.zipBuffer);
+    const extractionDir = path.join(TEST_OUTPUT_DIR, `bids_task_${ctx.bidsTaskId}`);
+    await extractZipArchive(zip, extractionDir);
+    ctx.bidsZipPath = zipOutputPath;
+    ctx.bidsExtractedDir = extractionDir;
+    console.log(`📁 BIDS archive extracted to ${extractionDir}`);
+  }
 
   if (withEvents) {
     console.log('\n--- 🤖 [8/8] ERPニューロマーケティング分析の実行 ---');
@@ -553,12 +661,56 @@ describe('Integration Test Suite', () => {
         const endTime = row.end_time instanceof Date ? row.end_time : new Date(row.end_time);
         expect(startTime).toBeInstanceOf(Date);
         expect(endTime).toBeInstanceOf(Date);
+        expect(startTime.getTime()).toBeLessThanOrEqual(endTime.getTime());
       }
+    });
+
+    test('DataLinker links all raw data objects without omissions', () => {
+      expect(workflow.calibRawObjectCount ?? 0).toBeGreaterThan(0);
+      expect(workflow.calibLinkedObjectsCount).toBe(workflow.calibRawObjectCount);
+      expect(workflow.mainRawObjectCount ?? 0).toBeGreaterThan(1);
+      expect(workflow.mainLinkedObjectsCount).toBe(workflow.mainRawObjectCount);
     });
 
     test('background processing completes with corrected events', () => {
       expect(workflow.calibCorrectedCount ?? 0).toBeGreaterThanOrEqual(3);
       expect(workflow.mainCorrectedCount ?? 0).toBeGreaterThanOrEqual(2);
+    });
+
+    test('corrected event onsets remain strictly increasing per session', async () => {
+      const subjectId = participantId.replace(/-/g, '');
+      const zipArchive = workflow.zip!;
+      const calibEventsPath = `bids_dataset/sub-${subjectId}/ses-1/eeg/sub-${subjectId}_ses-1_task-calibration_events.tsv`;
+      const mainEventsPath = `bids_dataset/sub-${subjectId}/ses-2/eeg/sub-${subjectId}_ses-2_task-mainexternal_events.tsv`;
+      const calibEvents = await neatCSV(
+        (await zipArchive.file(calibEventsPath)?.async('string')) ?? '',
+        {
+          mapHeaders: ({ header }) => header.toLowerCase(),
+          separator: '\t',
+        },
+      );
+      const mainEvents = await neatCSV(
+        (await zipArchive.file(mainEventsPath)?.async('string')) ?? '',
+        {
+          mapHeaders: ({ header }) => header.toLowerCase(),
+          separator: '\t',
+        },
+      );
+      type CsvRow = Record<string, string>;
+      const ensureStrictlyIncreasing = (rows: CsvRow[]) => {
+        const onsetValues = rows.map((row) => Number.parseFloat(row.onset ?? '0'));
+        onsetValues.forEach((value) => expect(Number.isFinite(value)).toBe(true));
+        let hasStrictIncrease = false;
+        for (let i = 1; i < onsetValues.length; i++) {
+          expect(onsetValues[i]).toBeGreaterThanOrEqual(onsetValues[i - 1]);
+          if (onsetValues[i] > onsetValues[i - 1]) {
+            hasStrictIncrease = true;
+          }
+        }
+        expect(onsetValues.length === 0 || hasStrictIncrease).toBe(true);
+      };
+      ensureStrictlyIncreasing(calibEvents);
+      ensureStrictlyIncreasing(mainEvents);
     });
 
     test('BIDS exporter produces archive with valid events.tsv files', async () => {
@@ -581,9 +733,11 @@ describe('Integration Test Suite', () => {
 
       const calibEvents = await neatCSV(calibTsvContent!, {
         mapHeaders: ({ header }) => header.toLowerCase(),
+        separator: '\t',
       });
       const mainEvents = await neatCSV(mainTsvContent!, {
         mapHeaders: ({ header }) => header.toLowerCase(),
+        separator: '\t',
       });
 
       expect(calibEvents.length).toBe(3);
@@ -601,9 +755,11 @@ describe('Integration Test Suite', () => {
 
       const calibChannels = await neatCSV(calibChannelsContent!, {
         mapHeaders: ({ header }) => header.toLowerCase(),
+        separator: '\t',
       });
       const mainChannels = await neatCSV(mainChannelsContent!, {
         mapHeaders: ({ header }) => header.toLowerCase(),
+        separator: '\t',
       });
 
       for (const row of [...calibChannels, ...mainChannels]) {
@@ -638,6 +794,26 @@ describe('Integration Test Suite', () => {
           expect(typeof value.status).toBe('string');
           expect(Array.isArray(value.reasons)).toBe(true);
         }
+        const reportChannels = Object.keys(report);
+        const expectedChannels = MOCK_CUSTOM_EEG_DEVICE.electrodes
+          .filter((electrode) => electrode.type === 0)
+          .map((electrode) => electrode.name);
+        for (const channel of expectedChannels) {
+          expect(reportChannels).toContain(channel);
+        }
+      }
+    });
+
+    test('BIDS sidecar JSON includes standardized metadata', async () => {
+      const subjectId = participantId.replace(/-/g, '');
+      const zipArchive = workflow.zip!;
+      const calibSidecarPath = `bids_dataset/sub-${subjectId}/ses-1/eeg/sub-${subjectId}_ses-1_task-calibration_eeg.json`;
+      const mainSidecarPath = `bids_dataset/sub-${subjectId}/ses-2/eeg/sub-${subjectId}_ses-2_task-mainexternal_eeg.json`;
+      const calibSidecar = JSON.parse((await zipArchive.file(calibSidecarPath)?.async('string')) ?? '{}');
+      const mainSidecar = JSON.parse((await zipArchive.file(mainSidecarPath)?.async('string')) ?? '{}');
+      for (const sidecar of [calibSidecar, mainSidecar]) {
+        expect(sidecar.PowerLineFrequency).toBe(50);
+        expect(sidecar.EEGReference).toBe('n/a');
       }
     });
 
@@ -693,6 +869,13 @@ describe('Integration Test Suite', () => {
     test('ERP neuro-marketing analysis is skipped when triggers are absent', () => {
       expect(workflow.erpAnalysisStatus).toBeUndefined();
       expect(workflow.erpAnalysis).toBeUndefined();
+    });
+
+    test('DataLinker still creates session links for raw data streams', () => {
+      expect(workflow.calibRawObjectCount ?? 0).toBeGreaterThan(0);
+      expect(workflow.calibLinkedObjectsCount).toBe(workflow.calibRawObjectCount);
+      expect(workflow.mainRawObjectCount ?? 0).toBeGreaterThan(0);
+      expect(workflow.mainLinkedObjectsCount).toBe(workflow.mainRawObjectCount);
     });
   });
 });

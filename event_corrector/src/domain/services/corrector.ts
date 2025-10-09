@@ -4,13 +4,16 @@ import { config } from '../../config/env';
 import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm';
 import type { EventCorrectorJobPayload } from '../../app/schemas/job';
 import { dbPool } from '../../infrastructure/db';
+import { parsePayloadsAndExtractTriggerTimestampsUs } from './trigger_timestamps';
 
 const zstdPromise = zstdInit().then(() => {
   console.log('✅ [ZSTD] WASM module initialized.');
 });
 
 const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any;
-const ELECTRODE_TYPE_TRIG = 3;
+const MAX_ALIGNMENT_ERROR_US = 500_000n; // 0.5 seconds tolerance for trigger alignment
+
+const bigintAbs = (value: bigint): bigint => (value < 0n ? -value : value);
 
 /**
  * MinIOから全ての生データオブジェクトを個別にダウンロードし、それぞれを伸長したBufferの配列として返す
@@ -32,78 +35,6 @@ async function downloadAndDecompressObjects(objectIds: string[]): Promise<Buffer
     decompressedBuffers.push(rawBuffer);
   }
   return decompressedBuffers;
-}
-
-function parsePayloadsAndExtractTriggerTimestamps(
-  payloads: { buffer: Buffer; startTimeMs: number; samplingRate: number }[],
-): bigint[] {
-  const allTriggerTimestamps: bigint[] = [];
-
-  for (const payload of payloads) {
-    const { buffer, startTimeMs, samplingRate } = payload;
-    if (samplingRate <= 0) {
-      console.error('[Corrector] Invalid sampling rate, skipping payload.', samplingRate);
-      continue;
-    }
-    const msPerSample = 1000 / samplingRate;
-
-    try {
-      if (buffer.length < 4) continue; // version(1) + num_channels(1) + reserved(2)
-
-      let offset = 0;
-      const version = buffer.readUInt8(offset);
-      offset += 1;
-      if (version !== 0x04) {
-        console.warn(`[Corrector] Unsupported payload version ${version}, skipping.`);
-        continue;
-      }
-      const num_channels = buffer.readUInt8(offset);
-      offset += 1;
-      offset += 2; // Skip reserved bytes
-
-      let triggerChannelIndex = -1;
-      for (let i = 0; i < num_channels; i++) {
-        offset += 8; // Skip name
-        const type = buffer.readUInt8(offset);
-        offset += 1;
-        offset += 1; // Skip reserved
-        if (type === ELECTRODE_TYPE_TRIG) {
-          triggerChannelIndex = i;
-        }
-      }
-
-      if (triggerChannelIndex === -1) {
-        continue;
-      }
-
-      const headerSize = offset;
-      const sampleSize = num_channels * 2 + 6 + 6 + num_channels;
-      if (sampleSize === 0) continue;
-
-      const samplesBuffer = buffer.slice(headerSize);
-      const numSamples = Math.floor(samplesBuffer.length / sampleSize);
-
-      let previousTriggerValue = 0;
-
-      for (let i = 0; i < numSamples; i++) {
-        const sampleOffset = i * sampleSize;
-        const signalsOffset = sampleOffset + triggerChannelIndex * 2;
-        const currentTriggerValue = samplesBuffer.readInt16LE(signalsOffset);
-
-        if (previousTriggerValue === 0 && currentTriggerValue !== 0) {
-          // タイムスタンプをマイクロ秒単位のBigIntで計算する
-          const timestampMs = BigInt(startTimeMs) + BigInt(Math.round(i * msPerSample));
-          allTriggerTimestamps.push(timestampMs);
-        }
-        previousTriggerValue = currentTriggerValue;
-      }
-    } catch (error) {
-      console.error('[Corrector] Error parsing a binary payload, skipping it.', error);
-    }
-  }
-
-  allTriggerTimestamps.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  return allTriggerTimestamps;
 }
 
 async function processCorrectionJob(
@@ -160,13 +91,13 @@ async function processCorrectionJob(
     }))
     .filter((p) => p.buffer);
 
-  const allTriggers = parsePayloadsAndExtractTriggerTimestamps(payloads);
+  const allTriggersUs = parsePayloadsAndExtractTriggerTimestampsUs(payloads);
 
   console.log(
-    `[Corrector] Found ${eventCount} events and detected ${allTriggers.length} triggers for session ${session_id}.`,
+    `[Corrector] Found ${eventCount} events and detected ${allTriggersUs.length} triggers for session ${session_id}.`,
   );
 
-  if (allTriggers.length === 0) {
+  if (allTriggersUs.length === 0) {
     console.warn(
       `[Corrector] No triggers were found in the raw data for session ${session_id}. Events cannot be corrected.`,
     );
@@ -177,21 +108,105 @@ async function processCorrectionJob(
     return;
   }
 
-  if (eventCount !== allTriggers.length) {
+  if (eventCount !== allTriggersUs.length) {
     console.warn(
-      `[Corrector] Mismatch: Event count (${eventCount}) does not match detected trigger count (${allTriggers.length}) for session ${session_id}. Proceeding with best-effort matching.`,
+      `[Corrector] Mismatch: Event count (${eventCount}) does not match detected trigger count (${allTriggersUs.length}) for session ${session_id}. Proceeding with best-effort matching.`,
     );
   }
 
-  const eventsToUpdate = Math.min(eventCount, allTriggers.length);
+  let sessionStartTimeUs: bigint | null = null;
+  try {
+    const sessionRow = await client.query<{ start_time: Date | string | null }>(
+      `SELECT start_time FROM sessions WHERE session_id = $1`,
+      [session_id],
+    );
+    const startTimeValue = sessionRow.rows[0]?.start_time ?? null;
+    if (startTimeValue) {
+      const startTimeMs =
+        startTimeValue instanceof Date
+          ? startTimeValue.getTime()
+          : new Date(startTimeValue).getTime();
+      if (!Number.isNaN(startTimeMs)) {
+        sessionStartTimeUs = BigInt(Math.round(startTimeMs)) * 1000n;
+      }
+    }
+  } catch (lookupError) {
+    console.warn(
+      `[Corrector] Failed to resolve start_time for session ${session_id}. Falling back to sequential trigger matching.`,
+      lookupError,
+    );
+  }
+
+  const eventsToUpdate = Math.min(eventCount, allTriggersUs.length);
+  const expectedEventTimesUs =
+    sessionStartTimeUs !== null
+      ? eventsResult.rows.slice(0, eventsToUpdate).map((row) => {
+          const onsetSeconds = Number(row.onset ?? 0);
+          if (!Number.isFinite(onsetSeconds)) {
+            console.warn(
+              `[Corrector] Non-finite onset for event ${row.event_id} in session ${session_id}. Using sequential trigger alignment.`,
+            );
+            return null;
+          }
+          const onsetOffsetUs = BigInt(Math.round(onsetSeconds * 1_000_000));
+          return sessionStartTimeUs! + onsetOffsetUs;
+        })
+      : null;
+
+  let triggerIndex = 0;
+  let lastAppliedTimestampUs: bigint | null = null;
+
   for (let i = 0; i < eventsToUpdate; i++) {
     const eventId = eventsResult.rows[i].event_id;
-    const correctedTimestampMs = allTriggers[i];
-    const correctedTimestampUs = correctedTimestampMs * 1000n;
+    if (triggerIndex >= allTriggersUs.length) {
+      break;
+    }
+
+    let correctedTimestampUs = allTriggersUs[triggerIndex];
+    const targetTimestampUs = expectedEventTimesUs?.[i] ?? null;
+
+    if (targetTimestampUs !== null) {
+      const remainingEvents = eventsToUpdate - i;
+      const maxSearchIndex = Math.max(triggerIndex, allTriggersUs.length - remainingEvents);
+
+      let bestIndex = triggerIndex;
+      let bestDiff = bigintAbs(allTriggersUs[bestIndex] - targetTimestampUs);
+
+      for (let cursor = triggerIndex + 1; cursor <= maxSearchIndex; cursor++) {
+        const diff = bigintAbs(allTriggersUs[cursor] - targetTimestampUs);
+        if (diff <= bestDiff) {
+          bestIndex = cursor;
+          bestDiff = diff;
+        } else {
+          break;
+        }
+      }
+
+      correctedTimestampUs = allTriggersUs[bestIndex];
+      if (bestDiff > MAX_ALIGNMENT_ERROR_US) {
+        console.warn(
+          `[Corrector] Trigger alignment difference of ${
+            Number(bestDiff) / 1_000_000
+          }s for event ${eventId} in session ${session_id}.`,
+        );
+      }
+      triggerIndex = bestIndex;
+    }
+
+    triggerIndex = Math.min(triggerIndex + 1, allTriggersUs.length);
+
+    if (lastAppliedTimestampUs !== null && correctedTimestampUs <= lastAppliedTimestampUs) {
+      correctedTimestampUs = lastAppliedTimestampUs + 1n;
+      console.warn(
+        `[Corrector] Adjusted non-increasing timestamp for event ${eventId} in session ${session_id}.`,
+      );
+    }
+
     await client.query(`UPDATE session_events SET onset_corrected_us = $1 WHERE event_id = $2`, [
       correctedTimestampUs.toString(),
       eventId,
     ]);
+    lastAppliedTimestampUs = correctedTimestampUs;
   }
 
   console.log(
@@ -224,4 +239,3 @@ export async function handleEventCorrectorJob(job: EventCorrectorJobPayload): Pr
     client.release();
   }
 }
-

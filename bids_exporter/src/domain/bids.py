@@ -2,6 +2,7 @@ import os
 import shutil
 import json
 import struct
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Tuple, TypedDict
 from uuid import UUID
@@ -127,6 +128,26 @@ class ChannelQualityAccumulator:
             }
 
         return report, bad_channels
+
+
+@contextmanager
+def _managed_minio_object(bucket: str, object_id: str):
+    response = None
+    try:
+        response = minio_client.get_object(bucket, object_id)
+        yield response
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception as close_error:  # pragma: no cover - defensive logging
+                print(f"Warning: Failed to close MinIO response for {object_id}: {close_error}")
+            try:
+                response.release_conn()
+            except Exception as release_error:  # pragma: no cover - defensive logging
+                print(
+                    f"Warning: Failed to release MinIO connection for {object_id}: {release_error}"
+                )
 def parse_payload(data: bytes) -> dict | None:
     """
     最新のデータフォーマットのバイナリペイロードを解析し、チャンネル情報と全チャンネルのデータを抽出する。
@@ -306,40 +327,44 @@ def create_bids_dataset(
                     quality_accumulator: ChannelQualityAccumulator | None = None
                     
                     for obj in data_objects:
-                        response = minio_client.get_object(RAW_DATA_BUCKET, obj['object_id'])
-                        try:
+                        with _managed_minio_object(RAW_DATA_BUCKET, obj['object_id']) as response:
                             payload = response.read()
-                        finally:
-                            response.close()
-                            response.release_conn()
-                        
-                        if not payload:
-                            print(f"Warning: Object {obj['object_id']} is empty. Skipping.")
-                            continue
 
-                        parsed = parse_payload(payload)
-                        
-                        if not parsed:
-                            print(f"Warning: Failed to parse object {obj['object_id']}. Skipping.")
-                            continue
+                            if not payload:
+                                print(f"Warning: Object {obj['object_id']} is empty. Skipping.")
+                                continue
 
-                        if session_sampling_rate is None:
-                            session_sampling_rate = obj['sampling_rate']
-                            session_lsb_to_volts = obj['lsb_to_volts']
-                            session_ch_names = parsed['ch_names']
-                            session_ch_types = parsed['ch_types']
-                            quality_accumulator = ChannelQualityAccumulator(session_ch_names, session_ch_types)
-                        
-                        elif (session_ch_names != parsed['ch_names'] or
-                              session_sampling_rate != obj['sampling_rate'] or
-                              session_lsb_to_volts != obj['lsb_to_volts']):
-                            print(f"Warning: Inconsistent data parameters in session {session['session_id']}. Skipping object {obj['object_id']}.")
-                            continue
+                            parsed = parse_payload(payload)
 
-                        if parsed["signals"] is not None and parsed["signals"].size > 0:
-                            all_session_data.append(parsed["signals"])
-                            if quality_accumulator is not None:
-                                quality_accumulator.update(parsed["signals"], parsed["impedance"])
+                            if not parsed:
+                                print(f"Warning: Failed to parse object {obj['object_id']}. Skipping.")
+                                continue
+
+                            if session_sampling_rate is None:
+                                session_sampling_rate = obj['sampling_rate']
+                                session_lsb_to_volts = obj['lsb_to_volts']
+                                session_ch_names = parsed['ch_names']
+                                session_ch_types = parsed['ch_types']
+                                quality_accumulator = ChannelQualityAccumulator(
+                                    session_ch_names, session_ch_types
+                                )
+
+                            elif (
+                                session_ch_names != parsed['ch_names']
+                                or session_sampling_rate != obj['sampling_rate']
+                                or session_lsb_to_volts != obj['lsb_to_volts']
+                            ):
+                                print(
+                                    f"Warning: Inconsistent data parameters in session {session['session_id']}. Skipping object {obj['object_id']}."
+                                )
+                                continue
+
+                            if parsed["signals"] is not None and parsed["signals"].size > 0:
+                                all_session_data.append(parsed["signals"])
+                                if quality_accumulator is not None:
+                                    quality_accumulator.update(
+                                        parsed["signals"], parsed["impedance"]
+                                    )
 
                     if not all_session_data or not session_ch_names or not session_ch_types or not session_sampling_rate or not session_lsb_to_volts:
                         print(f"Warning: Could not parse any valid data for session {session['session_id']}. Skipping.")

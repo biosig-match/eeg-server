@@ -119,29 +119,55 @@ async function linkRawDataToSession(dbClient: PoolClient, session: any) {
     `[Link] Found ${candidates.rowCount} candidate objects to link for session ${session_id}.`,
   );
 
-  let linkedCount = 0;
-  for (const row of candidates.rows) {
-    const updatedStartTime = new Date(Number(row.timestamp_start_ms)).toISOString();
-    const updatedEndTime = new Date(Number(row.timestamp_end_ms)).toISOString();
-
-    await dbClient.query(
-      `UPDATE raw_data_objects
-       SET start_time = $1, end_time = $2, session_id = $3
-       WHERE object_id = $4`,
-      [updatedStartTime, updatedEndTime, session_id, row.object_id],
-    );
-
-    await dbClient.query(
-      `INSERT INTO session_object_links (session_id, object_id)
-       VALUES ($1, $2)
-       ON CONFLICT (session_id, object_id) DO NOTHING`,
-      [session_id, row.object_id],
-    );
-    linkedCount++;
+  const objectIds = candidates.rows.map((row) => row.object_id);
+  if (objectIds.length === 0) {
+    console.log(`[Link] Candidate objects missing identifiers for session ${session_id}.`);
+    return;
   }
 
+  const toIsoString = (value: unknown, objectId: string, label: string): string => {
+    const numericValue =
+      typeof value === 'number' ? value : typeof value === 'bigint' ? Number(value) : Number(value);
+    if (!Number.isFinite(numericValue)) {
+      throw new Error(
+        `[Link] Invalid ${label} value for object ${objectId} (received ${value}).`,
+      );
+    }
+    return new Date(numericValue).toISOString();
+  };
+
+  const startTimeIsoValues = candidates.rows.map((row) =>
+    toIsoString(row.timestamp_start_ms, row.object_id, 'timestamp_start_ms'),
+  );
+  const endTimeIsoValues = candidates.rows.map((row) =>
+    toIsoString(row.timestamp_end_ms, row.object_id, 'timestamp_end_ms'),
+  );
+
+  await dbClient.query(
+    `
+      UPDATE raw_data_objects AS rdo
+      SET
+        start_time = data.start_time::timestamptz,
+        end_time = data.end_time::timestamptz,
+        session_id = $1
+      FROM UNNEST($2::text[], $3::text[], $4::text[]) AS data(object_id, start_time, end_time)
+      WHERE rdo.object_id = data.object_id;
+    `,
+    [session_id, objectIds, startTimeIsoValues, endTimeIsoValues],
+  );
+
+  await dbClient.query(
+    `
+      INSERT INTO session_object_links (session_id, object_id)
+      SELECT $1, object_id
+      FROM UNNEST($2::text[]) AS data(object_id)
+      ON CONFLICT (session_id, object_id) DO NOTHING;
+    `,
+    [session_id, objectIds],
+  );
+
   console.log(
-    `[Link] Successfully linked ${linkedCount} raw data objects for session ${session_id}.`,
+    `[Link] Successfully linked ${objectIds.length} raw data objects for session ${session_id}.`,
   );
 }
 

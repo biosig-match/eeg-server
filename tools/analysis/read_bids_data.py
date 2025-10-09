@@ -122,12 +122,5 @@ def analyze_bids_data(bids_root_path: Path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Read and visualize EEG data from a BIDS directory."
-    )
-    parser.add_argument(
-        "bids_root", type=str, help="Path to the root of the BIDS dataset (e.g., 'bids_output')."
-    )
-    args = parser.parse_args()
-
-    analyze_bids_data(Path(args.bids_root))
+    bids_root_path = Path('integration_test/test-output/bids_task_0c98a311-f98d-4f84-b731-6d2610e04502/bids_dataset')
+    analyze_bids_data(bids_root_path)

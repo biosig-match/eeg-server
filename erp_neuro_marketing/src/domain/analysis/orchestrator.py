@@ -57,7 +57,11 @@ async def generate_ai_summary(recommendations: List[dict]) -> str:
             client = genai.Client(api_key=settings.gemini_api_key)
             prompt = f"{system_prompt}\n\n{user_prompt}"
             contents = [types.Part.from_text(text=prompt)]
+            max_images = 10
+            attached_images = 0
             for item in recommendations:
+                if attached_images >= max_images:
+                    break
                 image_path = item.get("image_path")
                 if not image_path:
                     continue
@@ -66,6 +70,7 @@ async def generate_ai_summary(recommendations: List[dict]) -> str:
                     mime_type, _ = mimetypes.guess_type(image_path)
                     mime_type = mime_type or "image/png"
                     contents.append(types.Part.from_bytes(data=image_data, mime_type=mime_type))
+                    attached_images += 1
                 except Exception as exc:
                     logger.warning(
                         "Failed to attach image '%s' for Gemini summary: %s",
@@ -78,9 +83,50 @@ async def generate_ai_summary(recommendations: List[dict]) -> str:
             )
             return response.text or ""
 
-        # 3. 同期関数をバックグラウンドスレッドで実行
-        summary = await asyncio.to_thread(_generate)
-        return summary.strip()
+        # 3. 同期関数をバックグラウンドスレッドで実行（タイムアウト・リトライ付き）
+        timeout_seconds = getattr(settings, 'gemini_timeout_seconds', 30.0)
+        max_retries = 3
+        backoff_seconds = 2.0
+        fallback_summary = (
+            f"解析の結果、{len(recommendations)}件の製品に高い関心が示されました。"
+        )
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                summary = await asyncio.wait_for(
+                  asyncio.to_thread(_generate),
+                  timeout=timeout_seconds,
+                )
+                return summary.strip() or fallback_summary
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Gemini API call timed out after %.1f seconds (attempt %d/%d)",
+                    timeout_seconds,
+                    attempt,
+                    max_retries,
+                )
+            except Exception as api_error:  # pragma: no cover - defensive logging
+                status_code = getattr(api_error, "status_code", None)
+                error_text = str(api_error)
+                if status_code == 429 or '429' in error_text:
+                    logger.warning(
+                        "Gemini API rate limit encountered (attempt %d/%d): %s",
+                        attempt,
+                        max_retries,
+                        api_error,
+                    )
+                else:
+                    logger.error(
+                        "Gemini API call failed (attempt %d/%d): %s",
+                        attempt,
+                        max_retries,
+                        api_error,
+                        exc_info=True,
+                    )
+            if attempt < max_retries:
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds = min(backoff_seconds * 2, 10.0)
+        return f"{fallback_summary}(AIサマリーの生成に失敗しました)"
 
     except Exception as e:
         logger.exception("An unexpected error occurred during AI summary generation")
