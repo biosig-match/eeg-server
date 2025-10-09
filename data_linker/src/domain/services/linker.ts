@@ -1,8 +1,8 @@
-import { PoolClient } from 'pg'
-import { dbPool } from '../../infrastructure/db'
-import type { DataLinkerJobPayload } from '../../app/schemas/job'
-import { getAmqpChannel } from '../../infrastructure/queue'
-import { config } from '../../config/env'
+import { PoolClient } from 'pg';
+import { dbPool } from '../../infrastructure/db';
+import type { DataLinkerJobPayload } from '../../app/schemas/job';
+import { getAmqpChannel } from '../../infrastructure/queue';
+import { config } from '../../config/env';
 
 /**
  * The main handler for a single DataLinker job.
@@ -23,26 +23,25 @@ export async function handleLinkerJob(job: DataLinkerJobPayload): Promise<void> 
     if (sessionRes.rowCount === 0) {
       throw new Error(`Session ${job.session_id} not found in the database.`);
     }
-
     const session = sessionRes.rows[0];
 
-    // ### <<< ログ強化 >>> ###
     console.log(
       `[Job Details] Processing session: ${session.session_id}, User: ${session.user_id}`,
     );
-    console.log(
-      `[Job Details] Session Time Range (UTC): ${new Date(
-        session.start_time,
-      ).toISOString()} to ${new Date(session.end_time).toISOString()}`,
-    );
+    if (session.start_time && session.end_time) {
+      console.log(
+        `[Job Details] Session Time Range (UTC): ${new Date(
+          session.start_time,
+        ).toISOString()} to ${new Date(session.end_time).toISOString()}`,
+      );
+    }
 
     await dbClient.query("UPDATE sessions SET link_status = 'processing' WHERE session_id = $1", [
       job.session_id,
     ]);
 
-    await normalizeRawObjectTimestamps(dbClient, session);
+    await linkRawDataToSession(dbClient, session);
 
-    await linkRawObjectsToSession(dbClient, session);
     await linkMediaToExperiment(dbClient, session);
 
     await dbClient.query("UPDATE sessions SET link_status = 'completed' WHERE session_id = $1", [
@@ -71,143 +70,78 @@ export async function handleLinkerJob(job: DataLinkerJobPayload): Promise<void> 
   }
 }
 
-const UINT32_RANGE = 0x1_0000_0000n;
-const UINT32_MASK = 0xffff_ffffn;
+/**
+ * Finds raw data objects within the session's timeframe, updates their timestamps,
+ * and links them to the session.
+ * @param dbClient - The active database client.
+ * @param session - The session object from the database.
+ */
+async function linkRawDataToSession(dbClient: PoolClient, session: any) {
+  const { session_id, user_id, start_time, end_time } = session;
 
-function toBigInt(value: unknown): bigint {
-  return typeof value === 'bigint' ? value : BigInt(value as string | number);
-}
-
-function diffUnsigned32(base: bigint, current: bigint): bigint {
-  let diff = current - base;
-  if (diff < 0n) {
-    diff += UINT32_RANGE;
+  if (!start_time || !end_time) {
+    console.warn(
+      `[Link] Session ${session_id} is missing start or end time. Skipping raw data linking.`,
+    );
+    return;
   }
-  return diff;
-}
 
-async function normalizeRawObjectTimestamps(dbClient: PoolClient, session: any) {
-  const { user_id: userId, session_id: sessionId, start_time: sessionStart, end_time: sessionEnd } = session;
-  const offsetMs = session.clock_offset_info?.offset_ms_avg ?? 0;
+  const startTimeMs = new Date(start_time).getTime();
+  const endTimeMs = new Date(end_time).getTime();
+  const windowPaddingMs = 2_000;
+  const rangeStart = startTimeMs - windowPaddingMs;
+  const rangeEnd = endTimeMs + windowPaddingMs;
+
+  const findObjectsQuery = `
+    SELECT object_id, timestamp_start_ms, timestamp_end_ms
+    FROM raw_data_objects
+    WHERE
+      user_id = $1
+      AND (session_id IS NULL OR session_id = $4)
+      AND timestamp_end_ms >= $2
+      AND timestamp_start_ms <= $3
+    ORDER BY timestamp_start_ms ASC;
+  `;
+
+  const candidates = await dbClient.query(findObjectsQuery, [
+    user_id,
+    rangeStart,
+    rangeEnd,
+    session_id,
+  ]);
+
+  if (candidates.rowCount === 0) {
+    console.log(`[Link] No new raw data objects found for session ${session_id}.`);
+    return;
+  }
+
   console.log(
-    `[Normalize] Using offset: ${offsetMs} ms for user ${userId} (session ${sessionId}).`,
+    `[Link] Found ${candidates.rowCount} candidate objects to link for session ${session_id}.`,
   );
 
-  if (!sessionStart) {
-    console.warn(`[Normalize] Session ${sessionId} is missing start_time. Skipping normalization.`);
-    return;
-  }
-
-  const sessionStartMs = new Date(sessionStart).getTime();
-  const fallbackDurationMs = 60_000; // fallback to 1 minute window if end_time is unavailable
-  const sessionEndMs = sessionEnd ? new Date(sessionEnd).getTime() : sessionStartMs + fallbackDurationMs;
-  const sessionDurationMs = Math.max(sessionEndMs - sessionStartMs, 1_000);
-  const toleranceMs = 10_000;
-  const lowerBoundIso = new Date(sessionStartMs - toleranceMs).toISOString();
-  const upperBoundIso = new Date(sessionEndMs + toleranceMs).toISOString();
-
-  const candidateRes = await dbClient.query<{
-    object_id: string;
-    start_time_device: string;
-    end_time_device: string;
-    start_time: Date | null;
-  }>(
-    `SELECT object_id, start_time_device, end_time_device, start_time
-     FROM raw_data_objects
-     WHERE user_id = $1
-       AND start_time_device IS NOT NULL
-       AND end_time_device IS NOT NULL
-       AND (start_time IS NULL OR start_time < $2 OR start_time > $3)` ,
-    [userId, lowerBoundIso, upperBoundIso],
-  );
-
-  if (candidateRes.rows.length === 0) {
-    console.log('[Normalize] No raw data objects require normalization for this session.');
-    return;
-  }
-  console.log(`[Normalize] Considering ${candidateRes.rows.length} raw objects for session ${sessionId}.`);
-
-  const expectedDeviceStartUsFull =
-    BigInt(Math.round(sessionStartMs - offsetMs)) * 1000n;
-  const deviceBase = expectedDeviceStartUsFull & UINT32_MASK;
-
-  const maxSessionWindowUs = BigInt((sessionDurationMs + toleranceMs) * 1000);
-
-  let normalizedCount = 0;
-
-  for (const row of candidateRes.rows) {
-    const startDevice = toBigInt(row.start_time_device) & UINT32_MASK;
-    const endDevice = toBigInt(row.end_time_device) & UINT32_MASK;
-
-    const startDeltaUs = diffUnsigned32(deviceBase, startDevice);
-    const endDeltaUs = diffUnsigned32(deviceBase, endDevice);
-
-    if (startDeltaUs > maxSessionWindowUs) {
-      continue; // Likely belongs to a different session; skip.
-    }
-
-    const startUtcMs = sessionStartMs + Number(startDeltaUs / 1000n);
-    const endUtcMs = sessionStartMs + Number(endDeltaUs / 1000n);
-
-    const startIso = new Date(startUtcMs).toISOString();
-    const endIso = new Date(endUtcMs).toISOString();
+  let linkedCount = 0;
+  for (const row of candidates.rows) {
+    const updatedStartTime = new Date(Number(row.timestamp_start_ms)).toISOString();
+    const updatedEndTime = new Date(Number(row.timestamp_end_ms)).toISOString();
 
     await dbClient.query(
       `UPDATE raw_data_objects
-       SET start_time = $1, end_time = $2
-       WHERE object_id = $3`,
-      [startIso, endIso, row.object_id],
+       SET start_time = $1, end_time = $2, session_id = $3
+       WHERE object_id = $4`,
+      [updatedStartTime, updatedEndTime, session_id, row.object_id],
     );
-    normalizedCount += 1;
+
+    await dbClient.query(
+      `INSERT INTO session_object_links (session_id, object_id)
+       VALUES ($1, $2)
+       ON CONFLICT (session_id, object_id) DO NOTHING`,
+      [session_id, row.object_id],
+    );
+    linkedCount++;
   }
 
   console.log(
-    `[Normalize] Updated ${normalizedCount} raw data objects for session ${sessionId}.`,
-  );
-}
-
-async function linkRawObjectsToSession(dbClient: PoolClient, session: any) {
-  // ### <<< ログ強化 >>> ###
-  const preCheckQuery = `
-    SELECT object_id, start_time, end_time
-    FROM raw_data_objects
-    WHERE user_id = $1 AND start_time IS NOT NULL AND end_time IS NOT NULL
-  `;
-  const preCheckResult = await dbClient.query(preCheckQuery, [session.user_id]);
-  const preCheckCount = preCheckResult.rowCount ?? 0;
-  console.log(
-    `[Link] Pre-check: Found ${preCheckCount} normalized raw data objects for user ${session.user_id}.`,
-  );
-  if (preCheckCount > 0) {
-    preCheckResult.rows.forEach((row, index) => {
-      console.log(
-        `[Link] Pre-check Object #${index + 1}: ${row.object_id} -> Time Range (UTC): ${new Date(
-          row.start_time,
-        ).toISOString()} to ${new Date(row.end_time).toISOString()}`,
-      );
-    });
-  }
-
-  const linkQuery = `
-    INSERT INTO session_object_links (session_id, object_id)
-    SELECT $1, object_id
-    FROM raw_data_objects
-    WHERE
-      user_id = $2
-      AND start_time IS NOT NULL
-      AND end_time IS NOT NULL
-      AND TSTZRANGE(start_time, end_time) && TSTZRANGE($3::timestamptz, $4::timestamptz)
-    ON CONFLICT (session_id, object_id) DO NOTHING;
-  `;
-  const result = await dbClient.query(linkQuery, [
-    session.session_id,
-    session.user_id,
-    session.start_time,
-    session.end_time,
-  ]);
-  const rowsAffected = result.rowCount ?? 0;
-  console.log(
-    `[Link] Attempted to link raw data objects for session ${session.session_id}. Rows affected: ${rowsAffected}.`,
+    `[Link] Successfully linked ${linkedCount} raw data objects for session ${session_id}.`,
   );
 }
 
@@ -218,9 +152,7 @@ async function linkMediaToExperiment(dbClient: PoolClient, session: any) {
   );
   const imageRowCount = imageUpdateRes.rowCount ?? 0;
   if (imageRowCount > 0) {
-    console.log(
-      `[Link] Linked ${imageRowCount} images to experiment ${session.experiment_id}.`,
-    );
+    console.log(`[Link] Linked ${imageRowCount} images to experiment ${session.experiment_id}.`);
   }
   const audioUpdateRes = await dbClient.query(
     `UPDATE audio_clips SET experiment_id = $1 WHERE session_id = $2 AND experiment_id IS NULL`,

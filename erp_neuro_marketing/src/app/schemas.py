@@ -13,5 +13,6 @@ class ProductRecommendation(BaseModel):
 
 class AnalysisResponse(BaseModel):
     """The final response from the neuro-marketing analysis."""
+    experiment_id: UUID = Field(..., description="The ID of the analyzed experiment.")
     recommendations: List[ProductRecommendation] = Field(..., description="List of recommended products based on ERP analysis.")
     summary: str = Field(..., description="AI-generated summary of the user's preferences.")

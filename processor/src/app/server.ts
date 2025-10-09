@@ -12,8 +12,6 @@ import { config } from '../config/env'
 
 const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any
 
-const HEADER_SIZE = 18
-const POINT_SIZE = 53
 
 let amqpConnection: Connection | null = null
 let amqpChannel: Channel | null = null
@@ -42,10 +40,13 @@ app.get('/health', async (c) => {
     }
     return true
   })()
-  const dbStatus = await pgPool.query('SELECT 1').then(() => true).catch((error) => {
-    console.error('❌ [Processor] DB health check failed:', error)
-    return false
-  })
+  const dbStatus = await pgPool
+    .query('SELECT 1')
+    .then(() => true)
+    .catch((error) => {
+      console.error('❌ [Processor] DB health check failed:', error)
+      return false
+    })
   const allOk = rabbitStatus && dbStatus
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },
@@ -55,6 +56,7 @@ app.get('/health', async (c) => {
 
 const inspectSchema = z.object({
   payload_base64: z.string().min(1, 'payload_base64 is required'),
+  sampling_rate: z.number().positive('sampling_rate is required and must be positive'),
 })
 
 app.get('/api/v1/health', async (c) => {
@@ -77,7 +79,7 @@ app.get('/api/v1/health', async (c) => {
 
 app.post('/api/v1/inspect', zValidator('json', inspectSchema), async (c) => {
   await ensureZstdReady()
-  const { payload_base64 } = c.req.valid('json')
+  const { payload_base64, sampling_rate } = c.req.valid('json')
   let payload: Buffer
   try {
     payload = Buffer.from(payload_base64, 'base64')
@@ -88,10 +90,10 @@ app.post('/api/v1/inspect', zValidator('json', inspectSchema), async (c) => {
   const payloadView = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
   const decompressedData = zstdDecompress(payloadView)
   const decompressedBuffer = Buffer.from(decompressedData)
-  const metadata = extractMetadataFromPacket(decompressedBuffer)
+  const inspectionResult = inspectBinaryPayload(decompressedBuffer, sampling_rate)
 
   return c.json({
-    ...metadata,
+    inspection_result: inspectionResult,
     decompressed_size: decompressedBuffer.byteLength,
   })
 })
@@ -252,36 +254,66 @@ if (import.meta.main) {
   })
 }
 
-function extractMetadataFromPacket(decompressedData: Buffer): {
-  deviceId: string
-  startTime: number
-  endTime: number
-} {
-  if (decompressedData.length < HEADER_SIZE + POINT_SIZE) {
-    throw new Error('データがヘッダーと最低1つのデータポイントを含むには短すぎます。')
+function inspectBinaryPayload(data: Buffer, sampling_rate: number): Record<string, any> {
+  try {
+    if (data.length < 4) { // version(1) + num_channels(1) + reserved(2)
+      throw new Error('Data is too short for a valid header.')
+    }
+
+    let offset = 0
+    const version = data.readUInt8(offset); offset += 1
+    if (version !== 0x04) {
+      throw new Error(`Unsupported payload version: ${version}. Expected 4.`)
+    }
+    const num_channels = data.readUInt8(offset); offset += 1
+    offset += 2 // Skip reserved bytes
+
+    const electrodeConfigHeaderSize = offset + (num_channels * 10)
+    if (data.length < electrodeConfigHeaderSize) {
+      throw new Error(`Data is too short for electrode config. Expected: ${electrodeConfigHeaderSize}, Actual: ${data.length}`)
+    }
+    
+    const electrode_config = []
+    for (let i = 0; i < num_channels; i++) {
+      const nameBuffer = data.slice(offset, offset + 8)
+      const name = nameBuffer.toString('utf-8').replace(/\0/g, '')
+      offset += 8
+      const type = data.readUInt8(offset)
+      offset += 1
+      offset += 1 // Skip reserved byte for electrode_config
+      electrode_config.push({ name, type })
+    }
+
+    const headerSize = offset
+    const samplesPayload = data.slice(headerSize)
+    // 1サンプルあたりのサイズ: signals(ch*2) + accel(6) + gyro(6) + impedance(ch*1)
+    const sampleSize = (num_channels * 2) + 6 + 6 + num_channels
+
+    if (sampleSize === 0) {
+      return {
+        header: { version, num_channels, electrode_config },
+        error: 'Sample size is zero, cannot determine sample count.',
+      }
+    }
+
+    const num_samples_found = Math.floor(samplesPayload.length / sampleSize)
+
+    return {
+      header: {
+        version,
+        num_channels,
+        electrode_config,
+      },
+      payload_info: {
+        header_size_bytes: headerSize,
+        sample_size_bytes: sampleSize,
+        num_samples_found: num_samples_found,
+        expected_samples: sampling_rate,
+      },
+    }
+  } catch (error: any) {
+    return { error: 'Failed to inspect binary payload', details: error.message }
   }
-
-  const headerBuffer = decompressedData.slice(0, HEADER_SIZE)
-  const nullTerminatorIndex = headerBuffer.indexOf(0)
-  const deviceId = headerBuffer.toString(
-    'ascii',
-    0,
-    nullTerminatorIndex !== -1 ? nullTerminatorIndex : undefined,
-  )
-
-  const pointsBuffer = decompressedData.slice(HEADER_SIZE)
-  const numPoints = Math.floor(pointsBuffer.length / POINT_SIZE)
-
-  if (numPoints <= 0) {
-    throw new Error('パケットに有効なデータポイントが見つかりません。')
-  }
-
-  const timestampOffsetInPoint = 49
-  const startTime = pointsBuffer.readUInt32LE(timestampOffsetInPoint)
-  const lastPointOffset = (numPoints - 1) * POINT_SIZE
-  const endTime = pointsBuffer.readUInt32LE(lastPointOffset + timestampOffsetInPoint)
-
-  return { deviceId, startTime, endTime }
 }
 
 function isTransientError(error: any): boolean {
@@ -304,16 +336,29 @@ function isTransientError(error: any): boolean {
 async function processMessage(msg: ConsumeMessage | null) {
   if (!msg) return
 
-  try {
-    const compressedPayload = msg.content
-    const userId = msg.properties?.headers?.user_id?.toString()
+  const ack = () => amqpChannel?.ack(msg)
+  const nack = (requeue = false) => amqpChannel?.nack(msg, false, requeue)
 
-    if (!userId) {
-      console.warn('user_idヘッダーなしでメッセージを受信しました。ACKを送信して破棄します。')
-      amqpChannel?.ack(msg)
+  try {
+    const { headers } = msg.properties
+    const userId = headers?.user_id?.toString()
+    const deviceId = headers?.device_id?.toString()
+    const sessionId = headers?.session_id?.toString()
+    const startTimeMs = headers?.timestamp_start_ms
+    const endTimeMs = headers?.timestamp_end_ms
+    const samplingRate = headers?.sampling_rate
+    const lsbToVolts = headers?.lsb_to_volts
+
+    if (!userId || !deviceId || startTimeMs === undefined || endTimeMs === undefined || samplingRate === undefined || lsbToVolts === undefined) {
+      console.warn(
+        '必要なヘッダー(user_id, device_id, timestamps, sampling_rate, lsb_to_volts)が不足しているため、メッセージを破棄します。',
+        headers,
+      )
+      ack()
       return
     }
 
+    const compressedPayload = msg.content
     const payloadView = new Uint8Array(
       compressedPayload.buffer,
       compressedPayload.byteOffset,
@@ -323,54 +368,82 @@ async function processMessage(msg: ConsumeMessage | null) {
     const decompressedData = zstdDecompress(payloadView)
     const decompressedBuffer = Buffer.from(decompressedData)
 
-    const { deviceId, startTime, endTime } = extractMetadataFromPacket(decompressedBuffer)
-
-    const objectId = `raw/${userId}/start_tick=${startTime}/end_tick=${endTime}_${uuidv4()}.zst`
+    const objectId = `raw/${userId}/${deviceId}/start_ms=${startTimeMs}/end_ms=${endTimeMs}_${uuidv4()}.bin`
 
     const metaData = {
       'Content-Type': 'application/octet-stream',
       'X-User-Id': userId,
       'X-Device-Id': deviceId,
-      'X-Compression': 'none',
+      'X-Sampling-Rate': String(samplingRate),
+      'X-Lsb-To-Volts': String(lsbToVolts),
+      ...(sessionId && { 'X-Session-Id': sessionId }),
     }
-    const rawBuffer = Buffer.from(decompressedBuffer)
+
     await minioClient.putObject(
       config.MINIO_RAW_DATA_BUCKET,
       objectId,
-      rawBuffer,
-      rawBuffer.length,
+      decompressedBuffer,
+      decompressedBuffer.length,
       metaData,
     )
     console.log(`[MinIO] アップロード成功: ${objectId}`)
 
     const query = `
-      INSERT INTO raw_data_objects (object_id, user_id, device_id, start_time_device, end_time_device)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (object_id) DO NOTHING;
+      INSERT INTO raw_data_objects (object_id, user_id, device_id, session_id, timestamp_start_ms, timestamp_end_ms, sampling_rate, lsb_to_volts)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (object_id) DO NOTHING
     `
-    await pgPool.query(query, [objectId, userId, deviceId, startTime, endTime])
+    await pgPool.query(query, [
+      objectId,
+      userId,
+      deviceId,
+      null, // Session linking is handled asynchronously by DataLinker
+      startTimeMs,
+      endTimeMs,
+      samplingRate,
+      lsbToVolts,
+    ])
     console.log(`[PostgreSQL] メタデータ挿入成功: ${objectId}`)
 
-    amqpChannel?.ack(msg)
+    ack()
   } catch (error: any) {
     console.error('❌ メッセージ処理中にエラーが発生しました:', error.message)
     if (isTransientError(error)) {
       console.warn('⚠️  一時的なエラーのため、メッセージをリキューします。')
-      amqpChannel?.nack(msg, false, true)
+      nack(true)
     } else {
       console.error('🔴 恒久的なエラーのため、メッセージを破棄します。')
-      amqpChannel?.nack(msg, false, false)
+      nack(false)
     }
   }
 }
 
-async function ensureMinioBucket() {
-  const bucketExists = await minioClient.bucketExists(config.MINIO_RAW_DATA_BUCKET)
-  if (!bucketExists) {
-    console.log(`[MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" が存在しません。作成します...`)
-    await minioClient.makeBucket(config.MINIO_RAW_DATA_BUCKET)
-    console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" を作成しました。`)
-  } else {
-    console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" はすでに存在します。`)
+async function ensureMinioBucket(maxAttempts = 5, baseDelayMs = 1_000) {
+  let attempt = 0
+  while (attempt < maxAttempts) {
+    attempt += 1
+    try {
+      const bucketExists = await minioClient.bucketExists(config.MINIO_RAW_DATA_BUCKET)
+      if (!bucketExists) {
+        console.log(
+          `[MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" が存在しません。作成します...`,
+        )
+        await minioClient.makeBucket(config.MINIO_RAW_DATA_BUCKET)
+        console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" を作成しました。`)
+      } else {
+        console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" はすでに存在します。`)
+      }
+      return
+    } catch (error) {
+      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), 10_000)
+      console.error(
+        `❌ [MinIO] バケット初期化に失敗しました (attempt ${attempt}/${maxAttempts}).`,
+        error,
+      )
+      if (attempt >= maxAttempts) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
   }
 }

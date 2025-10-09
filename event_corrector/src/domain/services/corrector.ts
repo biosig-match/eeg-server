@@ -1,18 +1,16 @@
-import { PoolClient } from 'pg'
-import { minioClient } from '../../infrastructure/minio'
-import { config } from '../../config/env'
-import { init as zstdInit, decompress as zstdDecompress } from '@bokuweb/zstd-wasm'
-import type { EventCorrectorJobPayload } from '../../app/schemas/job'
-import { dbPool } from '../../infrastructure/db'
+import { PoolClient } from 'pg';
+import { minioClient } from '../../infrastructure/minio';
+import { config } from '../../config/env';
+import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm';
+import type { EventCorrectorJobPayload } from '../../app/schemas/job';
+import { dbPool } from '../../infrastructure/db';
 
 const zstdPromise = zstdInit().then(() => {
   console.log('✅ [ZSTD] WASM module initialized.');
 });
 
-const HEADER_SIZE = 18;
-const POINT_SIZE = 53;
-const TRIGGER_OFFSET = 48;
-const TIMESTAMP_US_OFFSET = 49;
+const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any;
+const ELECTRODE_TYPE_TRIG = 3;
 
 /**
  * MinIOから全ての生データオブジェクトを個別にダウンロードし、それぞれを伸長したBufferの配列として返す
@@ -20,142 +18,189 @@ const TIMESTAMP_US_OFFSET = 49;
 async function downloadAndDecompressObjects(objectIds: string[]): Promise<Buffer[]> {
   const decompressedBuffers: Buffer[] = [];
   for (const objectId of objectIds) {
-    const metadata = await minioClient.statObject(config.MINIO_RAW_DATA_BUCKET, objectId);
-    const compression = metadata.metaData?.['x-compression']?.toLowerCase?.() ?? '';
     const stream = await minioClient.getObject(config.MINIO_RAW_DATA_BUCKET, objectId);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
-      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk));
+      chunks.push(Buffer.from(chunk));
     }
-    const compressedBuffer = Buffer.concat(chunks);
-    if (compressedBuffer.length === 0) {
+    const rawBuffer = Buffer.concat(chunks);
+    if (rawBuffer.length === 0) {
       console.warn(`[Corrector] Skipped empty object: ${objectId}`);
       continue;
     }
 
-    if (compression === 'none') {
-      decompressedBuffers.push(compressedBuffer);
-      console.log(
-        `[Corrector] Loaded raw object ${objectId}: ${compressedBuffer.length} bytes (no compression)`,
-      );
-      continue;
-    }
-
-    try {
-      const compressedView = new Uint8Array(
-        compressedBuffer.buffer,
-        compressedBuffer.byteOffset,
-        compressedBuffer.byteLength,
-      );
-      const decompressed = zstdDecompress(compressedView as unknown as ArrayBuffer);
-      const decompressedBuffer = Buffer.from(decompressed);
-      decompressedBuffers.push(decompressedBuffer);
-      console.log(
-        `[Corrector] Decompressed object ${objectId}: ${compressedBuffer.length} bytes -> ${decompressedBuffer.length} bytes`,
-      );
-    } catch (error) {
-      console.error(
-        `[Corrector] Failed to decompress object ${objectId}. Error:`,
-        error,
-      );
-    }
+    decompressedBuffers.push(rawBuffer);
   }
   return decompressedBuffers;
 }
 
-/**
- * 伸長された単一の生データパケットからトリガのタイムスタンプを抽出する
- */
-function extractTriggerTimestamps(decompressedData: Buffer): bigint[] {
-  const triggerTimestamps: bigint[] = [];
-  if (decompressedData.length < HEADER_SIZE + POINT_SIZE) {
-    return []; // データが不十分
-  }
+function parsePayloadsAndExtractTriggerTimestamps(
+  payloads: { buffer: Buffer; startTimeMs: number; samplingRate: number }[],
+): bigint[] {
+  const allTriggerTimestamps: bigint[] = [];
 
-  const pointsBuffer = decompressedData.slice(HEADER_SIZE);
-  const numPoints = Math.floor(pointsBuffer.length / POINT_SIZE);
+  for (const payload of payloads) {
+    const { buffer, startTimeMs, samplingRate } = payload;
+    if (samplingRate <= 0) {
+      console.error('[Corrector] Invalid sampling rate, skipping payload.', samplingRate);
+      continue;
+    }
+    const msPerSample = 1000 / samplingRate;
 
-  for (let i = 0; i < numPoints; i++) {
-    const pointOffset = i * POINT_SIZE;
-    const point = pointsBuffer.slice(pointOffset, pointOffset + POINT_SIZE);
-    if (point.readUInt8(TRIGGER_OFFSET) === 1) {
-      const timestamp = BigInt(point.readUInt32LE(TIMESTAMP_US_OFFSET));
-      triggerTimestamps.push(timestamp);
+    try {
+      if (buffer.length < 4) continue; // version(1) + num_channels(1) + reserved(2)
+
+      let offset = 0;
+      const version = buffer.readUInt8(offset);
+      offset += 1;
+      if (version !== 0x04) {
+        console.warn(`[Corrector] Unsupported payload version ${version}, skipping.`);
+        continue;
+      }
+      const num_channels = buffer.readUInt8(offset);
+      offset += 1;
+      offset += 2; // Skip reserved bytes
+
+      let triggerChannelIndex = -1;
+      for (let i = 0; i < num_channels; i++) {
+        offset += 8; // Skip name
+        const type = buffer.readUInt8(offset);
+        offset += 1;
+        offset += 1; // Skip reserved
+        if (type === ELECTRODE_TYPE_TRIG) {
+          triggerChannelIndex = i;
+        }
+      }
+
+      if (triggerChannelIndex === -1) {
+        continue;
+      }
+
+      const headerSize = offset;
+      const sampleSize = num_channels * 2 + 6 + 6 + num_channels;
+      if (sampleSize === 0) continue;
+
+      const samplesBuffer = buffer.slice(headerSize);
+      const numSamples = Math.floor(samplesBuffer.length / sampleSize);
+
+      let previousTriggerValue = 0;
+
+      for (let i = 0; i < numSamples; i++) {
+        const sampleOffset = i * sampleSize;
+        const signalsOffset = sampleOffset + triggerChannelIndex * 2;
+        const currentTriggerValue = samplesBuffer.readInt16LE(signalsOffset);
+
+        if (previousTriggerValue === 0 && currentTriggerValue !== 0) {
+          // タイムスタンプをマイクロ秒単位のBigIntで計算する
+          const timestampMs = BigInt(startTimeMs) + BigInt(Math.round(i * msPerSample));
+          allTriggerTimestamps.push(timestampMs);
+        }
+        previousTriggerValue = currentTriggerValue;
+      }
+    } catch (error) {
+      console.error('[Corrector] Error parsing a binary payload, skipping it.', error);
     }
   }
-  return triggerTimestamps;
+
+  allTriggerTimestamps.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return allTriggerTimestamps;
 }
 
-async function processCorrectionJob(client: PoolClient, job: EventCorrectorJobPayload): Promise<void> {
+async function processCorrectionJob(
+  client: PoolClient,
+  job: EventCorrectorJobPayload,
+): Promise<void> {
   const { session_id } = job;
-  await client.query(`UPDATE sessions SET event_correction_status = 'processing' WHERE session_id = $1`, [session_id]);
-
-  const sessionResult = await client.query('SELECT * FROM sessions WHERE session_id = $1', [session_id]);
-  if (sessionResult.rowCount === 0) throw new Error(`Session ${session_id} not found.`);
-  const session = sessionResult.rows[0];
-
-  const eventsResult = await client.query(`SELECT event_id, onset FROM session_events WHERE session_id = $1 ORDER BY onset ASC`, [session_id]);
-  const objectsResult = await client.query(
-    `SELECT t1.object_id FROM session_object_links t1
-     JOIN raw_data_objects t2 ON t1.object_id = t2.object_id
-     WHERE t1.session_id = $1 ORDER BY t2.start_time_device ASC`,
+  await client.query(
+    `UPDATE sessions SET event_correction_status = 'processing' WHERE session_id = $1`,
     [session_id],
   );
 
-  if (eventsResult.rowCount === 0) {
-    console.log(`[Corrector] No events for session ${session_id}. Marking as completed.`);
-    await client.query(`UPDATE sessions SET event_correction_status = 'completed' WHERE session_id = $1`, [session_id]);
+  const eventsResult = await client.query(
+    `SELECT event_id, onset FROM session_events WHERE session_id = $1 ORDER BY onset ASC`,
+    [session_id],
+  );
+
+  const eventCount = eventsResult.rowCount ?? 0;
+  if (eventCount === 0) {
+    console.log(
+      `[Corrector] No events to correct for session ${session_id}. Marking as completed.`,
+    );
+    await client.query(
+      `UPDATE sessions SET event_correction_status = 'completed' WHERE session_id = $1`,
+      [session_id],
+    );
+    return;
+  }
+
+  const objectsResult = await client.query(
+    `SELECT t1.object_id, t2.timestamp_start_ms, t2.sampling_rate FROM session_object_links t1 JOIN raw_data_objects t2 ON t1.object_id = t2.object_id WHERE t1.session_id = $1 ORDER BY t2.timestamp_start_ms ASC`,
+    [session_id],
+  );
+
+  if ((objectsResult.rowCount ?? 0) === 0) {
+    console.warn(
+      `[Corrector] No raw data linked to session ${session_id}. Cannot correct. Marking as completed.`,
+    );
+    await client.query(
+      `UPDATE sessions SET event_correction_status = 'completed' WHERE session_id = $1`,
+      [session_id],
+    );
     return;
   }
 
   const objectIds = objectsResult.rows.map((r) => r.object_id);
-  if (objectIds.length === 0) {
-    console.warn(`[Corrector] No raw data linked to session ${session_id}. Cannot correct. Marking as completed.`);
-    await client.query(`UPDATE sessions SET event_correction_status = 'completed' WHERE session_id = $1`, [session_id]);
+  const decompressedBuffers = await downloadAndDecompressObjects(objectIds);
+
+  const payloads = objectsResult.rows
+    .map((row, i) => ({
+      buffer: decompressedBuffers[i],
+      startTimeMs: Number(row.timestamp_start_ms),
+      samplingRate: Number(row.sampling_rate),
+    }))
+    .filter((p) => p.buffer);
+
+  const allTriggers = parsePayloadsAndExtractTriggerTimestamps(payloads);
+
+  console.log(
+    `[Corrector] Found ${eventCount} events and detected ${allTriggers.length} triggers for session ${session_id}.`,
+  );
+
+  if (allTriggers.length === 0) {
+    console.warn(
+      `[Corrector] No triggers were found in the raw data for session ${session_id}. Events cannot be corrected.`,
+    );
+    await client.query(
+      `UPDATE sessions SET event_correction_status = 'completed' WHERE session_id = $1`,
+      [session_id],
+    );
     return;
   }
 
-  if (!session.clock_offset_info) {
-    throw new Error(`Cannot correct events for session ${session_id} without clock_offset_info.`);
-  }
-  const offsetMs = session.clock_offset_info.offset_ms_avg;
-  
-  const sessionStartDeviceUs = BigInt(Math.round(new Date(session.start_time).getTime() - offsetMs)) * 1000n;
-  const sessionEndDeviceUs = BigInt(Math.round(new Date(session.end_time).getTime() - offsetMs)) * 1000n;
-  
-  const MASK_32BIT = 0xffffffffn;
-  const sessionStart32bit = sessionStartDeviceUs & MASK_32BIT;
-  const sessionEnd32bit = sessionEndDeviceUs & MASK_32BIT;
-  
-  console.log(`[Corrector] Session device time range (32-bit us): ${sessionStart32bit} to ${sessionEnd32bit}`);
-
-  // ### <<< 修正点 >>> ###
-  // 複数の伸長済みバッファを個別に処理し、結果を結合する
-  const decompressedBuffers = await downloadAndDecompressObjects(objectIds);
-  const allTriggers = decompressedBuffers.flatMap(buffer => extractTriggerTimestamps(buffer));
-  allTriggers.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)); // 念のためソート
-
-  const relevantTriggers = allTriggers.filter(ts => {
-    if (sessionStart32bit <= sessionEnd32bit) {
-      return ts >= sessionStart32bit && ts <= sessionEnd32bit;
-    } else {
-      return ts >= sessionStart32bit || ts <= sessionEnd32bit;
-    }
-  });
-  
-  console.log(`[Corrector] Found ${eventsResult.rowCount} events, ${allTriggers.length} total triggers, and ${relevantTriggers.length} relevant triggers for session ${session_id}.`);
-
-  if (eventsResult.rowCount !== relevantTriggers.length) {
-    throw new Error(`Event count (${eventsResult.rowCount}) does not match relevant trigger count (${relevantTriggers.length}) for session ${session_id}.`);
+  if (eventCount !== allTriggers.length) {
+    console.warn(
+      `[Corrector] Mismatch: Event count (${eventCount}) does not match detected trigger count (${allTriggers.length}) for session ${session_id}. Proceeding with best-effort matching.`,
+    );
   }
 
-  for (let i = 0; i < eventsResult.rowCount; i++) {
+  const eventsToUpdate = Math.min(eventCount, allTriggers.length);
+  for (let i = 0; i < eventsToUpdate; i++) {
     const eventId = eventsResult.rows[i].event_id;
-    const correctedTimestamp = relevantTriggers[i];
-    await client.query(`UPDATE session_events SET onset_corrected_us = $1 WHERE event_id = $2`, [correctedTimestamp.toString(), eventId]);
+    const correctedTimestampMs = allTriggers[i];
+    const correctedTimestampUs = correctedTimestampMs * 1000n;
+    await client.query(`UPDATE session_events SET onset_corrected_us = $1 WHERE event_id = $2`, [
+      correctedTimestampUs.toString(),
+      eventId,
+    ]);
   }
-  console.log(`[Corrector] Successfully updated ${eventsResult.rowCount} events.`);
-  await client.query(`UPDATE sessions SET event_correction_status = 'completed' WHERE session_id = $1`, [session_id]);
+
+  console.log(
+    `[Corrector] Successfully updated ${eventsToUpdate} events for session ${session_id}.`,
+  );
+  await client.query(
+    `UPDATE sessions SET event_correction_status = 'completed' WHERE session_id = $1`,
+    [session_id],
+  );
 }
 
 export async function handleEventCorrectorJob(job: EventCorrectorJobPayload): Promise<void> {
@@ -166,13 +211,17 @@ export async function handleEventCorrectorJob(job: EventCorrectorJobPayload): Pr
     await client.query('BEGIN');
     await processCorrectionJob(client, job);
     await client.query('COMMIT');
-    console.log(`[Job] ✅ Success: Finished correcting events for session ${job.session_id}`);
+    console.log(`[Job] ✅ Success: Finished processing events for session ${job.session_id}`);
   } catch (error) {
     await client.query('ROLLBACK');
     console.error(`[Job] ❌ Failure: Rolled back transaction for session ${job.session_id}`, error);
-    await client.query(`UPDATE sessions SET event_correction_status = 'failed' WHERE session_id = $1`, [job.session_id]);
+    await client.query(
+      `UPDATE sessions SET event_correction_status = 'failed' WHERE session_id = $1`,
+      [job.session_id],
+    );
     throw error;
   } finally {
     client.release();
   }
 }
+

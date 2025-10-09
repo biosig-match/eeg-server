@@ -6,7 +6,7 @@ import { zValidator } from '@hono/zod-validator'
 
 import { config } from '../config/env'
 
-let amqpConnection: Connection | null = null
+let amqpConnection: amqp.Connection | null = null
 let amqpChannel: Channel | null = null
 let lastConnectedAt: Date | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -15,6 +15,12 @@ const app = new Hono()
 
 const dataSchema = z.object({
   user_id: z.string().min(1, 'user_id is required'),
+  session_id: z.string().nullable(),
+  device_id: z.string().min(1, 'device_id is required'),
+  timestamp_start_ms: z.number().int(),
+  timestamp_end_ms: z.number().int(),
+  sampling_rate: z.number().positive('sampling_rate must be a positive number'),
+  lsb_to_volts: z.number(),
   payload_base64: z.string().min(1, 'payload_base64 is required'),
 })
 
@@ -141,7 +147,16 @@ app.get('/api/v1/health', (c) => {
 
 app.post('/api/v1/data', zValidator('json', dataSchema), async (c) => {
   assertChannelOrThrow()
-  const { user_id, payload_base64 } = c.req.valid('json')
+  const {
+    user_id,
+    session_id,
+    device_id,
+    timestamp_start_ms,
+    timestamp_end_ms,
+    sampling_rate,
+    lsb_to_volts,
+    payload_base64,
+  } = c.req.valid('json')
 
   let binaryPayload: Buffer
   try {
@@ -153,16 +168,26 @@ app.post('/api/v1/data', zValidator('json', dataSchema), async (c) => {
     throw new HTTPException(400, { message: 'payload_base64 must be valid base64', cause: error })
   }
 
+  const messageHeaders = {
+    user_id,
+    device_id,
+    timestamp_start_ms,
+    timestamp_end_ms,
+    sampling_rate,
+    lsb_to_volts,
+    ...(session_id && { session_id }),
+  }
+
   amqpChannel!.publish(config.RAW_DATA_EXCHANGE, '', binaryPayload, {
     persistent: true,
-    headers: { user_id },
+    headers: messageHeaders,
     timestamp: Date.now(),
     contentType: 'application/octet-stream',
     contentEncoding: 'zstd',
   })
 
   console.log(
-    `[HTTP:/data] Published sensor data for user: ${user_id} (${binaryPayload.byteLength} bytes)`,
+    `[HTTP:/data] Published sensor data for user: ${user_id}, device: ${device_id} (${binaryPayload.byteLength} bytes)`,
   )
   return c.json({ status: 'accepted' }, 202)
 })

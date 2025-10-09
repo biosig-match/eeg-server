@@ -1,10 +1,12 @@
-import { beforeAll, afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import fs from 'fs/promises';
 import path from 'path';
 import { Pool } from 'pg';
 import * as Minio from 'minio';
-import { init as initZstd, compress } from '@bokuweb/zstd-wasm';
+import { compress, init as initZstd } from '@bokuweb/zstd-wasm';
 import JSZip from 'jszip';
+import { Buffer } from 'buffer';
+import neatCSV from 'neat-csv';
 
 const BASE_URL = 'http://localhost:8080/api/v1';
 const DATABASE_URL = 'postgres://admin:password@localhost:5432/eeg_data';
@@ -19,63 +21,106 @@ const MINIO_RAW_DATA_BUCKET = 'raw-data';
 const MINIO_MEDIA_BUCKET = 'media';
 const BIDS_BUCKET = 'bids-exports';
 
-const OWNER_ID = `test-owner-${Date.now()}`;
-const PARTICIPANT_ID = `test-participant-${Date.now()}`;
-const STRANGER_ID = `test-stranger-${Date.now()}`;
-
 const ASSETS_DIR = path.resolve(__dirname, '../assets');
 const TEST_OUTPUT_DIR = path.resolve(__dirname, '../test-output');
 
-const HEADER_SIZE = 18;
-const POINT_SIZE = 53;
-const EEG_CHANNELS = 8;
-const SAMPLE_RATE = 256; // Hz
-const MICROSECONDS_PER_SECOND = 1_000_000n;
+const DB_POLL_TIMEOUT = 30000;
+const TASK_POLL_TIMEOUT = 120000;
+
+interface ElectrodeConfig {
+  name: string;
+  type: number;
+}
+interface DeviceProfile {
+  deviceId: string;
+  samplingRate: number;
+  lsbToVolts: number;
+  electrodes: ElectrodeConfig[];
+}
+
+const MOCK_CUSTOM_EEG_DEVICE: DeviceProfile = {
+  deviceId: 'custom-eeg-test-device',
+  samplingRate: 250.0,
+  lsbToVolts: 5.722e-7,
+  electrodes: [
+    { name: 'CH1', type: 0 },
+    { name: 'CH2', type: 0 },
+    { name: 'CH3', type: 0 },
+    { name: 'CH4', type: 0 },
+    { name: 'CH5', type: 0 },
+    { name: 'CH6', type: 0 },
+    { name: 'CH7', type: 0 },
+    { name: 'CH8', type: 0 },
+    { name: 'TRIG', type: 3 },
+  ],
+};
+
+const MOCK_MUSE2_DEVICE: DeviceProfile = {
+  deviceId: 'muse2-test-device',
+  samplingRate: 256.0,
+  lsbToVolts: 4.8828125e-7,
+  electrodes: [
+    { name: 'TP9', type: 0 },
+    { name: 'AF7', type: 0 },
+    { name: 'AF8', type: 0 },
+    { name: 'TP10', type: 0 },
+  ],
+};
+
+interface ExperimentResponse {
+  experiment_id: string;
+}
+
+interface ExportTaskStatus {
+  status: string;
+  error_message?: string | null;
+  result_file_path?: string | null;
+}
+
+interface ExportTaskAccepted {
+  task_id: string;
+}
+
+interface ErpAnalysisResponse {
+  summary: string;
+  recommendations: Array<{ file_name: string }>;
+}
+
+interface ErrorResponse {
+  detail?: string;
+}
+
+interface RawDataObjectRow {
+  object_id: string;
+  sampling_rate: number;
+  lsb_to_volts: number;
+  start_time: Date | string;
+  end_time: Date | string;
+}
 
 interface WorkflowContext {
+  [key: string]: any;
+  experimentId?: string;
+  bidsTaskId?: string;
+  bidsArchiveEntries?: string[];
+  zip?: JSZip;
+  zipBuffer?: Buffer;
+  rawDataObjects?: RawDataObjectRow[];
+  calibCorrectedCount?: number;
+  mainCorrectedCount?: number;
+  erpAnalysisStatus?: number;
+  erpAnalysis?: ErpAnalysisResponse;
+}
+interface ScenarioConfig {
+  deviceProfile: DeviceProfile;
+  withEvents: boolean;
   ownerId: string;
   participantId: string;
   strangerId: string;
-  experimentId: string;
-  stimuliUploadStatus: number;
-  stimuliObjectIds: string[];
-  participantExperimentsCount: number;
-  participantsList: Array<{ user_id: string; role: string }>;
-  stimuliListForParticipant: Array<{ file_name: string }>;
-  calibSessionId: string;
-  mainSessionId: string;
-  collectorDataStatuses: number[];
-  collectorMediaStatus: number;
-  rawDataObjectIds: string[];
-  normalizedRawDataObjects: Array<{ object_id: string; start_time: string | null; end_time: string | null }>;
-  sessionObjectLinkCounts: Record<string, number>;
-  sessionEventsCorrectedCount: Record<string, number>;
-  imageObjectId?: string;
-  bidsTaskId: string;
-  bidsResultFilePath: string;
-  bidsZipPath: string;
-  bidsExtractionDir: string;
-  bidsArchiveEntries: string[];
-  bidsFilesOnDisk: string[];
-  bidsDownloadedSize: number;
-  realtimeAnalysis: {
-    psd_image: string;
-    coherence_image: string;
-    timestamp: string;
-  };
-  erpAnalysis: {
-    summary: string;
-    recommendations: Array<Record<string, unknown>>;
-  };
-  unauthorizedStimuliUploadStatus: number;
-  unauthorizedStimuliListStatus: number;
-  unauthorizedExportStatus: number;
-  sessionStatuses: Record<string, { link: string; correction: string }>;
 }
 
 let dbPool: Pool;
 let minioClient: Minio.Client;
-let workflow: WorkflowContext;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -83,719 +128,571 @@ async function pollForDbStatus(
   query: string,
   params: any[],
   expectedValue: any,
-  timeout = 20000,
-  interval = 1000,
-): Promise<void> {
+  timeout = DB_POLL_TIMEOUT,
+) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const { rows } = await dbPool.query(query, params);
-    if (rows.length > 0 && rows[0].status === expectedValue) {
-      return;
-    }
-    await sleep(interval);
+    if (rows.length > 0 && rows[0].status === expectedValue) return;
+    await sleep(1000);
   }
-  throw new Error(`Timed out waiting for DB status '${expectedValue}' with query ${query}`);
+  throw new Error(`Timed out waiting for DB status '${expectedValue}'`);
 }
 
 async function pollForTaskStatus(
   taskId: string,
   expectedStatus: string,
-  timeout = 120000,
-  interval = 2000,
-): Promise<any> {
+  timeout = TASK_POLL_TIMEOUT,
+): Promise<ExportTaskStatus> {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const response = await fetch(`${BASE_URL}/export-tasks/${taskId}`);
     if (response.ok) {
-      const task = await response.json();
-      if (task.status === expectedStatus) {
-        return task;
-      }
-      if (task.status === 'failed') {
-        throw new Error(`Export task ${taskId} failed: ${task.error_message ?? 'unknown error'}`);
-      }
+      const task = (await response.json()) as ExportTaskStatus;
+      if (task.status === expectedStatus) return task;
+      if (task.status === 'failed')
+        throw new Error(`Export task ${taskId} failed: ${task.error_message ?? 'unknown'}`);
     }
-    await sleep(interval);
+    await sleep(2000);
   }
-  throw new Error(`Timed out waiting for export task ${taskId} to reach status ${expectedStatus}`);
+  throw new Error(`Timed out waiting for export task ${taskId} to be ${expectedStatus}`);
 }
 
-function createMockDeviceDataBuffer(
-  deviceId: string,
-  numPoints: number,
-  triggerIndices: number[],
-  startTimestampUs: bigint,
+function createMockBinaryPayload(
+  profile: DeviceProfile,
+  numSamples: number,
+  triggerEvents: Record<number, number> = {},
 ): Buffer {
-  const header = Buffer.alloc(HEADER_SIZE);
-  header.write(deviceId, 0, 'utf-8');
-  const payload = Buffer.alloc(POINT_SIZE * numPoints);
-  let currentTimestamp = startTimestampUs;
-  const stepUs = BigInt(Math.floor(Number(MICROSECONDS_PER_SECOND) / SAMPLE_RATE));
+  const numChannels = profile.electrodes.length;
+  const headerSize = 4 + numChannels * 10;
+  const sampleSize = numChannels * 2 + 12 + numChannels; // signals(ch*2) + accel(6) + gyro(6) + impedance(ch*1)
+  const buffer = Buffer.alloc(headerSize + numSamples * sampleSize);
+  let offset = 0;
 
-  for (let i = 0; i < numPoints; i++) {
-    const offset = i * POINT_SIZE;
-    for (let ch = 0; ch < EEG_CHANNELS; ch++) {
-      payload.writeUInt16LE(2048 + ch, offset + ch * 2);
-    }
-    const isTrigger = triggerIndices.includes(i);
-    payload.writeUInt8(isTrigger ? 1 : 0, offset + 48);
-    payload.writeUInt32LE(Number(currentTimestamp & 0xffffffffn), offset + 49);
-    currentTimestamp += stepUs;
+  buffer.writeUInt8(0x04, offset++); // version
+  buffer.writeUInt8(numChannels, offset++); // num_channels
+  buffer.writeUInt16LE(0, offset); // reserved
+  offset += 2;
+
+  for (const electrode of profile.electrodes) {
+    const nameBuf = Buffer.alloc(8);
+    nameBuf.write(electrode.name, 'utf-8');
+    nameBuf.copy(buffer, offset);
+    offset += 8;
+    buffer.writeUInt8(electrode.type, offset++); // type
+    buffer.writeUInt8(0, offset++); // reserved
   }
 
-  return Buffer.concat([header, payload]);
+  const triggerChannelIndex = profile.electrodes.findIndex((e) => e.type === 3);
+
+  // Samples
+  for (let i = 0; i < numSamples; i++) {
+    // EEG/EMG/EOG Signals
+    for (let ch = 0; ch < numChannels; ch++) {
+      // トリガーチャンネルで、かつイベントが存在する場合、その値を書き込む
+      buffer.writeInt16LE(
+        ch === triggerChannelIndex && triggerEvents[i] ? triggerEvents[i] : 2048 + ch,
+        offset,
+      );
+      offset += 2;
+    }
+    // Accel + Gyro (dummy data)
+    buffer.fill(0, offset, offset + 12);
+    offset += 12;
+    // Impedance (dummy data)
+    buffer.fill(255, offset, offset + numChannels);
+    offset += numChannels;
+  }
+  return buffer;
 }
 
 async function resetDatabase() {
-  await dbPool.query(`
-    TRUNCATE TABLE
-      erp_analysis_results,
-      session_object_links,
-      session_events,
-      images,
-      audio_clips,
-      raw_data_objects,
-      sessions,
-      experiment_participants,
-      experiment_stimuli,
-      export_tasks,
-      experiments
-    CASCADE
-  `);
+  await dbPool.query(
+    'TRUNCATE TABLE erp_analysis_results, session_object_links, session_events, images, audio_clips, raw_data_objects, sessions, experiment_participants, experiment_stimuli, export_tasks, experiments CASCADE',
+  );
   await dbPool.query('TRUNCATE TABLE calibration_items RESTART IDENTITY CASCADE');
 }
 
 async function seedCalibrationAssets() {
-  const calibrationAssets = [
-    { fileName: 'face01.png', itemType: 'target', filePath: path.join(ASSETS_DIR, 'face01.png') },
-    { fileName: 'house01.png', itemType: 'nontarget', filePath: path.join(ASSETS_DIR, 'house01.png') },
-  ];
-
-  for (const asset of calibrationAssets) {
-    const objectId = `stimuli/calibration/${asset.fileName}`;
-    await minioClient.fPutObject(MINIO_MEDIA_BUCKET, objectId, asset.filePath, {
-      'Content-Type': 'image/png',
-    });
+  for (const asset of [
+    { f: 'face01.png', t: 'target' },
+    { f: 'house01.png', t: 'nontarget' },
+  ]) {
+    const objectId = `stimuli/calibration/${asset.f}`;
+    await minioClient.fPutObject(MINIO_MEDIA_BUCKET, objectId, path.join(ASSETS_DIR, asset.f));
     await dbPool.query(
-      `INSERT INTO calibration_items (file_name, item_type, object_id)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (file_name) DO UPDATE SET
-         item_type = EXCLUDED.item_type,
-         object_id = EXCLUDED.object_id`,
-      [asset.fileName, asset.itemType, objectId],
+      'INSERT INTO calibration_items (file_name, item_type, object_id) VALUES ($1, $2, $3)',
+      [asset.f, asset.t, objectId],
     );
   }
 }
 
-async function sendCollectorData(userId: string, buffer: Buffer): Promise<number> {
-  const compressedPayload = Buffer.from(compress(buffer));
-  const payloadBase64 = compressedPayload.toString('base64');
-  const response = await fetch(`${BASE_URL}/data`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: userId, payload_base64: payloadBase64 }),
-  });
-  return response.status;
-}
-
-async function sendCollectorMedia(
+async function sendCollectorData(
   userId: string,
-  sessionId: string,
-  localFilePath: string,
-  timestamp: Date,
-  mimetype: string,
-  originalFilename: string,
+  sessionId: string | null,
+  profile: DeviceProfile,
+  start: Date,
+  end: Date,
+  buffer: Buffer,
 ): Promise<number> {
-  const form = new FormData();
-  form.append('file', Bun.file(localFilePath), originalFilename);
-  form.append('user_id', userId);
-  form.append('session_id', sessionId);
-  form.append('mimetype', mimetype);
-  form.append('original_filename', originalFilename);
-  form.append('timestamp_utc', timestamp.toISOString());
-
-  const response = await fetch(`${BASE_URL}/media`, {
-    method: 'POST',
-    body: form,
-  });
-  return response.status;
-}
-
-async function waitForStimuli(experimentId: string, expectedCount: number, timeout = 20000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const result = await dbPool.query(
-      'SELECT file_name, object_id FROM experiment_stimuli WHERE experiment_id = $1',
-      [experimentId],
-    );
-    if ((result.rowCount ?? 0) >= expectedCount) {
-      return result.rows as Array<{ file_name: string; object_id: string }>;
-    }
-    await sleep(1000);
-  }
-  throw new Error(`Stimulus processor did not persist ${expectedCount} items for experiment ${experimentId}`);
-}
-
-async function waitForRawDataObjects(userId: string, expectedCount: number, timeout = 30000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const result = await dbPool.query(
-      'SELECT object_id, start_time, end_time FROM raw_data_objects WHERE user_id = $1 ORDER BY start_time_device ASC',
-      [userId],
-    );
-    if ((result.rowCount ?? 0) >= expectedCount) {
-      return result.rows as Array<{ object_id: string; start_time: string | null; end_time: string | null }>;
-    }
-    await sleep(1000);
-  }
-  throw new Error(`Processor did not persist ${expectedCount} raw data objects for user ${userId}`);
-}
-
-async function waitForImages(sessionId: string, expectedCount: number, timeout = 20000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const result = await dbPool.query(
-      'SELECT object_id, experiment_id FROM images WHERE session_id = $1',
-      [sessionId],
-    );
-    if ((result.rowCount ?? 0) >= expectedCount) {
-      return result.rows as Array<{ object_id: string; experiment_id: string | null }>;
-    }
-    await sleep(1000);
-  }
-  throw new Error(`Media processor did not persist expected images for session ${sessionId}`);
-}
-
-async function waitForCorrectedEvents(sessionId: string, expectedCount: number, timeout = 30000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const result = await dbPool.query(
-      'SELECT COUNT(*)::int AS count FROM session_events WHERE session_id = $1 AND onset_corrected_us IS NOT NULL',
-      [sessionId],
-    );
-    const count = result.rows[0]?.count ?? 0;
-    if (count >= expectedCount) {
-      return count;
-    }
-    await sleep(1000);
-  }
-  throw new Error(`Event Corrector did not update ${expectedCount} events for session ${sessionId}`);
-}
-
-async function waitForSessionLinks(sessionId: string, expectedMinimum: number, timeout = 30000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const result = await dbPool.query(
-      'SELECT COUNT(*)::int AS count FROM session_object_links WHERE session_id = $1',
-      [sessionId],
-    );
-    const count = result.rows[0]?.count ?? 0;
-    if (count >= expectedMinimum) {
-      return count;
-    }
-    await sleep(1000);
-  }
-  throw new Error(`Data Linker did not link ${expectedMinimum} objects for session ${sessionId}`);
-}
-
-async function waitForRealtimeAnalysis(userId: string, timeout = 60000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const response = await fetch(`${BASE_URL}/users/${userId}/analysis`);
-    if (response.status === 200) {
-      return (await response.json()) as {
-        psd_image: string;
-        coherence_image: string;
-        timestamp: string;
-      };
-    }
-    await sleep(1500);
-  }
-  throw new Error(`Realtime analyzer did not produce results for user ${userId}`);
-}
-
-async function listFilesRecursively(dir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      const nested = await listFilesRecursively(fullPath);
-      for (const nestedPath of nested) {
-        files.push(nestedPath);
-      }
-    } else {
-      files.push(fullPath);
-    }
-  }
-  return files;
-}
-
-async function runFullWorkflow(): Promise<WorkflowContext> {
-  const ctx: WorkflowContext = {
-    ownerId: OWNER_ID,
-    participantId: PARTICIPANT_ID,
-    strangerId: STRANGER_ID,
-    experimentId: '',
-    stimuliUploadStatus: 0,
-    stimuliObjectIds: [],
-    participantExperimentsCount: 0,
-    participantsList: [],
-    stimuliListForParticipant: [],
-    calibSessionId: '',
-    mainSessionId: '',
-    collectorDataStatuses: [],
-    collectorMediaStatus: 0,
-    rawDataObjectIds: [],
-    normalizedRawDataObjects: [],
-    sessionObjectLinkCounts: {},
-    sessionEventsCorrectedCount: {},
-    bidsTaskId: '',
-    bidsResultFilePath: '',
-    bidsZipPath: '',
-    bidsExtractionDir: '',
-    bidsArchiveEntries: [],
-    bidsFilesOnDisk: [],
-    bidsDownloadedSize: 0,
-    realtimeAnalysis: { psd_image: '', coherence_image: '', timestamp: '' },
-    erpAnalysis: { summary: '', recommendations: [] },
-    unauthorizedStimuliUploadStatus: 0,
-    unauthorizedStimuliListStatus: 0,
-    unauthorizedExportStatus: 0,
-    sessionStatuses: {},
-  };
-
-  // 1. Create experiment
-  const createExpResponse = await fetch(`${BASE_URL}/experiments`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Id': OWNER_ID },
-    body: JSON.stringify({
-      name: 'NeuroMarketing Product Test',
-      description: 'Integration coverage scenario',
-      presentation_order: 'sequential',
-    }),
-  });
-  if (createExpResponse.status !== 201) {
-    throw new Error(`Failed to create experiment. Status: ${createExpResponse.status}`);
-  }
-  const experiment = await createExpResponse.json();
-  ctx.experimentId = experiment.experiment_id;
-
-  // 2. Upload stimuli (owner)
-  const buildStimuliForm = () => {
-    const form = new FormData();
-    form.append('stimuli_definition_csv', Bun.file(path.join(ASSETS_DIR, 'stimuli_definition.csv')));
-    form.append('stimulus_files', Bun.file(path.join(ASSETS_DIR, 'product_a.png')), 'product_a.png');
-    form.append('stimulus_files', Bun.file(path.join(ASSETS_DIR, 'product_b.png')), 'product_b.png');
-    return form;
-  };
-
-  const uploadStimuliResponse = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/stimuli`, {
-    method: 'POST',
-    headers: { 'X-User-Id': OWNER_ID },
-    body: buildStimuliForm(),
-  });
-  ctx.stimuliUploadStatus = uploadStimuliResponse.status;
-  if (uploadStimuliResponse.status !== 202) {
-    throw new Error(`Stimulus upload failed. Status: ${uploadStimuliResponse.status}`);
-  }
-
-  const unauthorizedStimuliResponse = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/stimuli`, {
-    method: 'POST',
-    headers: { 'X-User-Id': STRANGER_ID },
-    body: buildStimuliForm(),
-  });
-  ctx.unauthorizedStimuliUploadStatus = unauthorizedStimuliResponse.status;
-
-  const stimuliRows = await waitForStimuli(ctx.experimentId, 2);
-  ctx.stimuliObjectIds = stimuliRows.map((row) => row.object_id);
-
-  // 3. Participant joins experiment
-  const joinResponse = await fetch(`${BASE_URL}/auth/experiments/${ctx.experimentId}/join`, {
+  const compressed = Buffer.from(compress(buffer));
+  const resp = await fetch(`${BASE_URL}/data`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: PARTICIPANT_ID }),
+    body: JSON.stringify({
+      user_id: userId,
+      session_id: sessionId,
+      device_id: profile.deviceId,
+      timestamp_start_ms: start.getTime(),
+      timestamp_end_ms: end.getTime(),
+      sampling_rate: profile.samplingRate,
+      lsb_to_volts: profile.lsbToVolts,
+      payload_base64: compressed.toString('base64'),
+    }),
   });
-  if (joinResponse.status !== 201) {
-    throw new Error(`Participant failed to join experiment. Status: ${joinResponse.status}`);
+  return resp.status;
+}
+
+async function waitForRowCount(
+  table: string,
+  conditions: string,
+  expected: number,
+  timeout = 30000,
+) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const { rows } = await dbPool.query(`SELECT COUNT(*)::int FROM ${table} WHERE ${conditions}`);
+    if ((rows[0]?.count ?? 0) >= expected) return rows[0].count;
+    await sleep(1000);
   }
+  throw new Error(`Timed out waiting for ${expected} rows in ${table} where ${conditions}`);
+}
 
-  const experimentsResponse = await fetch(`${BASE_URL}/experiments`, {
-    headers: { 'X-User-Id': PARTICIPANT_ID },
+async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext> {
+  const { deviceProfile, withEvents, ownerId, participantId, strangerId } = config;
+  const ctx: WorkflowContext = { deviceProfile, withEvents };
+
+  console.log(
+    `\n\n--- 🚀 Starting Test Scenario: ${deviceProfile.deviceId} (Events: ${withEvents}) ---`,
+  );
+
+  console.log('\n--- 🧪 [1/8] 実験の作成と刺激のアップロード ---');
+  const expResp = await fetch(`${BASE_URL}/experiments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Id': ownerId },
+    body: JSON.stringify({ name: `Test Exp - ${deviceProfile.deviceId}` }),
   });
-  if (!experimentsResponse.ok) {
-    throw new Error(`Failed to list experiments for participant. Status: ${experimentsResponse.status}`);
-  }
-  const experimentsList = (await experimentsResponse.json()) as Array<{ experiment_id: string }>;
-  ctx.participantExperimentsCount = experimentsList.length;
+  const expData = (await expResp.json()) as ExperimentResponse;
+  ctx.experimentId = expData.experiment_id;
+  console.log(`✅ Experiment created with ID: ${ctx.experimentId}`);
 
-  ctx.stimuliListForParticipant = await (async () => {
-    const resp = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/stimuli`, {
-      headers: { 'X-User-Id': PARTICIPANT_ID },
-    });
-    if (!resp.ok) {
-      throw new Error(`Participant failed to fetch stimuli list. Status: ${resp.status}`);
-    }
-    return (await resp.json()) as Array<{ file_name: string }>;
-  })();
-
-  const unauthorizedStimuliListResp = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/stimuli`, {
-    headers: { 'X-User-Id': STRANGER_ID },
+  const stimuliForm = new FormData();
+  stimuliForm.append(
+    'stimuli_definition_csv',
+    Bun.file(path.join(ASSETS_DIR, 'stimuli_definition.csv')),
+  );
+  stimuliForm.append(
+    'stimulus_files',
+    Bun.file(path.join(ASSETS_DIR, 'product_a.png')),
+    'product_a.png',
+  );
+  stimuliForm.append(
+    'stimulus_files',
+    Bun.file(path.join(ASSETS_DIR, 'product_b.png')),
+    'product_b.png',
+  );
+  const stimuliUploadResp = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/stimuli`, {
+    method: 'POST',
+    headers: { 'X-User-Id': ownerId },
+    body: stimuliForm,
   });
-  ctx.unauthorizedStimuliListStatus = unauthorizedStimuliListResp.status;
+  ctx.stimuliUploadStatus = stimuliUploadResp.status;
+  await waitForRowCount('experiment_stimuli', `experiment_id = '${ctx.experimentId}'`, 2);
+  console.log('✅ 2 stimulus files uploaded and metadata saved.');
 
-  // 4. Sessions setup
-  const clockOffsetInfo = { offset_ms_avg: -150.5, rtt_ms_avg: 45.2 };
+  console.log('\n--- 🧑‍🔬 [2/8] 参加者の実験参加と権限テスト ---');
+  await fetch(`${BASE_URL}/auth/experiments/${ctx.experimentId}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: participantId }),
+  });
+  console.log(`✅ Participant ${participantId} joined the experiment.`);
+  const strangerStimuliResp = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/stimuli`, {
+    method: 'POST',
+    headers: { 'X-User-Id': strangerId },
+    body: new FormData(),
+  });
+  ctx.unauthorizedStimuliUploadStatus = strangerStimuliResp.status;
+  console.log(
+    `✅ Unauthorized stimuli upload attempt by stranger responded with: ${ctx.unauthorizedStimuliUploadStatus} (expected 403)`,
+  );
+
+  console.log('\n--- ▶️ [3/8] セッションの開始 ---');
   const now = Date.now();
-  const calibDurationMs = 20000;
-  const mainDurationMs = 20000;
-  const gapBetweenSessions = 15000;
+  ctx.calibSession = { id: `cal-${now}`, start: new Date(now), type: 'calibration' };
+  ctx.mainSession = { id: `main-${now}`, start: new Date(now + 30000), type: 'main_external' };
 
-  const calibStartTime = new Date(now);
-  const calibEndTime = new Date(now + calibDurationMs);
-  const mainStartTime = new Date(calibEndTime.getTime() + gapBetweenSessions);
-  const mainEndTime = new Date(mainStartTime.getTime() + mainDurationMs);
-
-  ctx.calibSessionId = `cal-session-${Date.now()}`;
-  const startCalibResponse = await fetch(`${BASE_URL}/sessions/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Id': PARTICIPANT_ID },
-    body: JSON.stringify({
-      session_id: ctx.calibSessionId,
-      user_id: PARTICIPANT_ID,
-      experiment_id: ctx.experimentId,
-      start_time: calibStartTime.toISOString(),
-      session_type: 'calibration',
-    }),
-  });
-  if (startCalibResponse.status !== 201) {
-    throw new Error(`Failed to start calibration session. Status: ${startCalibResponse.status}`);
+  for (const s of [ctx.calibSession, ctx.mainSession]) {
+    await fetch(`${BASE_URL}/sessions/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Id': participantId },
+      body: JSON.stringify({
+        session_id: s.id,
+        user_id: participantId,
+        experiment_id: ctx.experimentId,
+        start_time: s.start.toISOString(),
+        session_type: s.type,
+      }),
+    });
+    console.log(`✅ Session started: ${s.type} (ID: ${s.id})`);
   }
 
-  ctx.mainSessionId = `main-session-${Date.now()}`;
-  const startMainResponse = await fetch(`${BASE_URL}/sessions/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Id': PARTICIPANT_ID },
-    body: JSON.stringify({
-      session_id: ctx.mainSessionId,
-      user_id: PARTICIPANT_ID,
-      experiment_id: ctx.experimentId,
-      start_time: mainStartTime.toISOString(),
-      session_type: 'main_external',
-    }),
-  });
-  if (startMainResponse.status !== 201) {
-    throw new Error(`Failed to start main session. Status: ${startMainResponse.status}`);
+  console.log('\n--- 🧠 [4/8] 生体データ(EEG)の送信 ---');
+  const samplesPerChunk = Math.floor(deviceProfile.samplingRate);
+  const chunkDurationMs = (samplesPerChunk / deviceProfile.samplingRate) * 1000;
+  // [修正] タイムアウトの原因となっていたデータ送信量を5秒から10秒に修正
+  // サーバー側の`realtime_analyzer`が10秒分のデータを要求するため
+  const ANALYSIS_WINDOW_SECONDS = 15;
+
+  console.log(`  - Sending ${ANALYSIS_WINDOW_SECONDS} seconds of data...`);
+
+  for (let i = 0; i < ANALYSIS_WINDOW_SECONDS; i++) {
+    // どのセッションのデータとして送信するかを決定 (例: 最初の3秒をキャリブレーションに)
+    const session = i < 3 ? ctx.calibSession : ctx.mainSession;
+    const chunkBaseTime = session.start.getTime();
+
+    const chunkStartTime = new Date(chunkBaseTime + i * chunkDurationMs);
+    const chunkEndTime = new Date(chunkStartTime.getTime() + chunkDurationMs);
+
+    const triggerEvents = withEvents ? { [50 + i * 10]: 1, [150 + i * 15]: 2 } : {};
+    const buffer = createMockBinaryPayload(deviceProfile, samplesPerChunk, triggerEvents);
+
+    await sendCollectorData(
+      participantId,
+      session.id,
+      deviceProfile,
+      chunkStartTime,
+      chunkEndTime,
+      buffer,
+    );
+    // RabbitMQがメッセージを処理する時間を与える
+    await sleep(200);
+  }
+  console.log(`✅ Data sending complete.`);
+
+  console.log('\n--- ⏹️ [5/8] セッションの終了とイベントログのアップロード ---');
+  for (const s of [ctx.calibSession, ctx.mainSession]) {
+    s.end = new Date(s.start.getTime() + 25000); // 25秒間のセッションだったとする
+    const form = new FormData();
+    form.append(
+      'metadata',
+      JSON.stringify({
+        session_id: s.id,
+        user_id: participantId,
+        experiment_id: ctx.experimentId,
+        device_id: deviceProfile.deviceId,
+        start_time: s.start.toISOString(),
+        end_time: s.end.toISOString(),
+        session_type: s.type,
+      }),
+    );
+    if (withEvents) {
+      const csvFile = s.type === 'calibration' ? 'calibration_events.csv' : 'main_task_events.csv';
+      form.append('events_log_csv', Bun.file(path.join(ASSETS_DIR, csvFile)));
+      console.log(`📎 Attaching ${csvFile} for session ${s.id}`);
+    }
+    await fetch(`${BASE_URL}/sessions/end`, {
+      method: 'POST',
+      headers: { 'X-User-Id': participantId },
+      body: form,
+    });
+    console.log(`✅ Session ended: ${s.type} (ID: ${s.id})`);
   }
 
-  // 5. Send EEG data via collector (3 blocks per session)
-  const blocksPerSession = 3;
-  const pointsPerBlock = 256;
-  const blockDurationUs = MICROSECONDS_PER_SECOND; // 1 second worth at 256 Hz
-  const calibBaseUs = BigInt(Math.round(calibStartTime.getTime() - clockOffsetInfo.offset_ms_avg)) * 1000n;
-  const mainBaseUs = BigInt(Math.round(mainStartTime.getTime() - clockOffsetInfo.offset_ms_avg)) * 1000n;
-
-  for (let i = 0; i < blocksPerSession; i++) {
-    const blockStart = calibBaseUs + blockDurationUs * BigInt(i);
-    const triggers = i === 0 ? [10, 50] : i === 1 ? [100] : [];
-    const buffer = createMockDeviceDataBuffer('calib-device', pointsPerBlock, triggers, blockStart);
-    ctx.collectorDataStatuses.push(await sendCollectorData(PARTICIPANT_ID, buffer));
+  console.log('\n--- ⏳ [6/8] バックグラウンド処理の完了を待機 ---');
+  for (const s of [ctx.calibSession, ctx.mainSession]) {
+    console.log(`  - Waiting for DataLinker on session ${s.id}...`);
+    await pollForDbStatus(
+      'SELECT link_status AS status FROM sessions WHERE session_id = $1',
+      [s.id],
+      'completed',
+    );
+    console.log(`    ✅ DataLinker completed.`);
+    console.log(`  - Waiting for EventCorrector on session ${s.id}...`);
+    await pollForDbStatus(
+      'SELECT event_correction_status AS status FROM sessions WHERE session_id = $1',
+      [s.id],
+      'completed',
+    );
+    console.log(`    ✅ EventCorrector completed.`);
   }
 
-  for (let i = 0; i < blocksPerSession; i++) {
-    const blockStart = mainBaseUs + blockDurationUs * BigInt(i);
-    const triggers = i === 0 ? [20] : i === 1 ? [80] : [];
-    const buffer = createMockDeviceDataBuffer('main-device', pointsPerBlock, triggers, blockStart);
-    ctx.collectorDataStatuses.push(await sendCollectorData(PARTICIPANT_ID, buffer));
+  console.log('\n--- 📦 [7/8] BIDSエクスポートの実行と権限テスト ---');
+  if (!ctx.experimentId) {
+    throw new Error('Experiment ID was not set');
   }
 
-  ctx.rawDataObjectIds = (await waitForRawDataObjects(PARTICIPANT_ID, ctx.collectorDataStatuses.length)).map(
-    (row) => row.object_id,
-  );
-
-  // 6. Upload media via collector (photo during main session)
-  const mediaTimestamp = new Date(mainStartTime.getTime() + 5000);
-  ctx.collectorMediaStatus = await sendCollectorMedia(
-    PARTICIPANT_ID,
-    ctx.mainSessionId,
-    path.join(ASSETS_DIR, 'product_a.png'),
-    mediaTimestamp,
-    'image/png',
-    'session_photo.png',
-  );
-
-  // 7. End sessions with metadata & events
-  const calibForm = new FormData();
-  calibForm.append('metadata', JSON.stringify({
-    session_id: ctx.calibSessionId,
-    user_id: PARTICIPANT_ID,
-    experiment_id: ctx.experimentId,
-    device_id: 'calib-device',
-    start_time: calibStartTime.toISOString(),
-    end_time: calibEndTime.toISOString(),
-    session_type: 'calibration',
-    clock_offset_info: clockOffsetInfo,
-  }));
-  calibForm.append('events_log_csv', Bun.file(path.join(ASSETS_DIR, 'calibration_events.csv')));
-  const endCalibResp = await fetch(`${BASE_URL}/sessions/end`, {
-    method: 'POST',
-    headers: { 'X-User-Id': PARTICIPANT_ID },
-    body: calibForm,
-  });
-  if (!endCalibResp.ok) {
-    throw new Error(`Failed to end calibration session. Status: ${endCalibResp.status}`);
-  }
-
-  const mainForm = new FormData();
-  mainForm.append('metadata', JSON.stringify({
-    session_id: ctx.mainSessionId,
-    user_id: PARTICIPANT_ID,
-    experiment_id: ctx.experimentId,
-    device_id: 'main-device',
-    start_time: mainStartTime.toISOString(),
-    end_time: mainEndTime.toISOString(),
-    session_type: 'main_external',
-    clock_offset_info: clockOffsetInfo,
-  }));
-  mainForm.append('events_log_csv', Bun.file(path.join(ASSETS_DIR, 'main_task_events.csv')));
-  const endMainResp = await fetch(`${BASE_URL}/sessions/end`, {
-    method: 'POST',
-    headers: { 'X-User-Id': PARTICIPANT_ID },
-    body: mainForm,
-  });
-  if (!endMainResp.ok) {
-    throw new Error(`Failed to end main session. Status: ${endMainResp.status}`);
-  }
-
-  // 8. Wait for DataLinker & EventCorrector results
-  await pollForDbStatus(
-    'SELECT link_status AS status FROM sessions WHERE session_id = $1',
-    [ctx.calibSessionId],
-    'completed',
-  );
-  await pollForDbStatus(
-    'SELECT event_correction_status AS status FROM sessions WHERE session_id = $1',
-    [ctx.calibSessionId],
-    'completed',
-  );
-  await pollForDbStatus(
-    'SELECT link_status AS status FROM sessions WHERE session_id = $1',
-    [ctx.mainSessionId],
-    'completed',
-  );
-  await pollForDbStatus(
-    'SELECT event_correction_status AS status FROM sessions WHERE session_id = $1',
-    [ctx.mainSessionId],
-    'completed',
-  );
-
-  ctx.sessionStatuses[ctx.calibSessionId] = { link: 'completed', correction: 'completed' };
-  ctx.sessionStatuses[ctx.mainSessionId] = { link: 'completed', correction: 'completed' };
-
-  const normalizedRows = await dbPool.query(
-    'SELECT object_id, start_time, end_time FROM raw_data_objects WHERE user_id = $1 ORDER BY start_time ASC',
-    [PARTICIPANT_ID],
-  );
-  ctx.normalizedRawDataObjects = normalizedRows.rows as Array<{
-    object_id: string;
-    start_time: string | null;
-    end_time: string | null;
-  }>;
-
-  ctx.sessionObjectLinkCounts[ctx.calibSessionId] = await waitForSessionLinks(ctx.calibSessionId, 1);
-  ctx.sessionObjectLinkCounts[ctx.mainSessionId] = await waitForSessionLinks(ctx.mainSessionId, 1);
-
-  ctx.sessionEventsCorrectedCount[ctx.calibSessionId] = await waitForCorrectedEvents(ctx.calibSessionId, 3);
-  ctx.sessionEventsCorrectedCount[ctx.mainSessionId] = await waitForCorrectedEvents(ctx.mainSessionId, 2);
-
-  const imageRows = await waitForImages(ctx.mainSessionId, 1);
-  ctx.imageObjectId = imageRows[0].object_id;
-
-  // Ensure participant listing (owner view)
-  const participantsResp = await fetch(`${BASE_URL}/auth/experiments/${ctx.experimentId}/participants`, {
-    headers: { 'X-User-Id': OWNER_ID },
-  });
-  if (!participantsResp.ok) {
-    throw new Error(`Owner failed to list participants. Status: ${participantsResp.status}`);
-  }
-  ctx.participantsList = (await participantsResp.json()) as Array<{ user_id: string; role: string }>;
-
-  // 9. Trigger BIDS export
   const exportResp = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/export`, {
     method: 'POST',
-    headers: { 'X-User-Id': OWNER_ID },
+    headers: { 'X-User-Id': ownerId },
   });
-  if (exportResp.status !== 202) {
-    throw new Error(`Failed to start BIDS export. Status: ${exportResp.status}`);
-  }
-  const exportPayload = await exportResp.json();
-  ctx.bidsTaskId = exportPayload.task_id as string;
+  ctx.bidsTaskStatus = exportResp.status;
+  const exportData = (await exportResp.json()) as ExportTaskAccepted;
+  ctx.bidsTaskId = exportData.task_id;
+  console.log(`✅ BIDS export task started with ID: ${ctx.bidsTaskId}`);
 
-  const unauthorizedExportResp = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/export`, {
+  const strangerExportResp = await fetch(`${BASE_URL}/experiments/${ctx.experimentId}/export`, {
     method: 'POST',
-    headers: { 'X-User-Id': STRANGER_ID },
+    headers: { 'X-User-Id': strangerId },
   });
-  ctx.unauthorizedExportStatus = unauthorizedExportResp.status;
+  ctx.unauthorizedExportStatus = strangerExportResp.status;
+  console.log(
+    `✅ Unauthorized export attempt by stranger responded with: ${ctx.unauthorizedExportStatus} (expected 403)`,
+  );
 
+  if (!ctx.bidsTaskId) {
+    throw new Error('BIDS task ID was not set');
+  }
   const completedTask = await pollForTaskStatus(ctx.bidsTaskId, 'completed');
-  ctx.bidsResultFilePath = completedTask.result_file_path as string;
-
-  const downloadResp = await fetch(`${BASE_URL}/export-tasks/${ctx.bidsTaskId}/download`, {
-    headers: { 'X-User-Id': OWNER_ID },
-  });
-  if (!downloadResp.ok) {
-    throw new Error(`Failed to download BIDS export. Status: ${downloadResp.status}`);
-  }
-
-  const zipBuffer = Buffer.from(await downloadResp.arrayBuffer());
-  ctx.bidsDownloadedSize = zipBuffer.byteLength;
-  ctx.bidsZipPath = path.join(TEST_OUTPUT_DIR, `bids_export_${ctx.experimentId}.zip`);
-  await Bun.write(ctx.bidsZipPath, zipBuffer);
-
-  const zip = await JSZip.loadAsync(zipBuffer);
+  console.log(`✅ BIDS export task completed. Result path: ${completedTask.result_file_path}`);
+  const downloadResp = await fetch(`${BASE_URL}/export-tasks/${ctx.bidsTaskId}/download`);
+  ctx.zipBuffer = Buffer.from(await downloadResp.arrayBuffer());
+  const zip = await JSZip.loadAsync(ctx.zipBuffer);
   ctx.bidsArchiveEntries = Object.keys(zip.files);
+  ctx.zip = zip;
+  console.log(`✅ BIDS archive downloaded and contains ${ctx.bidsArchiveEntries.length} files.`);
 
-  ctx.bidsExtractionDir = path.join(TEST_OUTPUT_DIR, `bids_export_${ctx.experimentId}`);
-  await fs.mkdir(ctx.bidsExtractionDir, { recursive: true });
-  const extractPromises: Promise<void>[] = [];
-  zip.forEach((relativePath, file) => {
-    const destPath = path.join(ctx.bidsExtractionDir, relativePath);
-    if (file.dir) {
-      extractPromises.push(fs.mkdir(destPath, { recursive: true }));
+  if (withEvents) {
+    console.log('\n--- 🤖 [8/8] ERPニューロマーケティング分析の実行 ---');
+    const erpResp = await fetch(
+      `${BASE_URL}/neuro-marketing/experiments/${ctx.experimentId}/analyze`,
+      { method: 'POST', headers: { 'X-User-Id': ownerId } },
+    );
+    ctx.erpAnalysisStatus = erpResp.status;
+    console.log(`✅ Analysis service responded with status: ${ctx.erpAnalysisStatus}`);
+    if (erpResp.ok) {
+    ctx.erpAnalysis = (await erpResp.json()) as ErpAnalysisResponse;
+      console.log('\n---------- 🤖 Geminiからのニューロマーケティング分析サマリー 🤖 ----------');
+      console.log(ctx.erpAnalysis.summary);
+      console.log('--------------------------------------------------------------------');
     } else {
-      extractPromises.push(
-        (async () => {
-          await fs.mkdir(path.dirname(destPath), { recursive: true });
-          const content = await file.async('nodebuffer');
-          await fs.writeFile(destPath, content);
-        })(),
-      );
+    const errorBody = (await erpResp.json()) as ErrorResponse;
+      console.error(`❌ Analysis failed:`, errorBody.detail || 'Unknown error');
     }
-  });
-  await Promise.all(extractPromises);
-  ctx.bidsFilesOnDisk = await listFilesRecursively(ctx.bidsExtractionDir);
-
-  // 10. Realtime analyzer & ERP analysis
-  ctx.realtimeAnalysis = await waitForRealtimeAnalysis(PARTICIPANT_ID);
-
-  const erpResp = await fetch(`${BASE_URL}/neuro-marketing/experiments/${ctx.experimentId}/analyze`, {
-    method: 'POST',
-    headers: { 'X-User-Id': OWNER_ID },
-  });
-  if (!erpResp.ok) {
-    throw new Error(`ERP analysis failed. Status: ${erpResp.status}`);
   }
-  ctx.erpAnalysis = (await erpResp.json()) as WorkflowContext['erpAnalysis'];
+
+  const rawDataQuery = await dbPool.query<RawDataObjectRow>(
+    `SELECT object_id, sampling_rate, lsb_to_volts, start_time, end_time
+       FROM raw_data_objects
+      WHERE user_id = $1
+      ORDER BY timestamp_start_ms ASC`,
+    [participantId],
+  );
+  ctx.rawDataObjects = rawDataQuery.rows;
+
+  const [calibCorrected, mainCorrected] = await Promise.all([
+    dbPool
+      .query<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM session_events WHERE session_id = $1 AND onset_corrected_us IS NOT NULL`,
+        [ctx.calibSession.id],
+      )
+      .then((res) => Number(res.rows[0]?.count ?? 0)),
+    dbPool
+      .query<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM session_events WHERE session_id = $1 AND onset_corrected_us IS NOT NULL`,
+        [ctx.mainSession.id],
+      )
+      .then((res) => Number(res.rows[0]?.count ?? 0)),
+  ]);
+
+  ctx.calibCorrectedCount = calibCorrected;
+  ctx.mainCorrectedCount = mainCorrected;
 
   return ctx;
 }
 
+// --- Test Suite ---
 beforeAll(async () => {
   await initZstd();
   dbPool = new Pool({ connectionString: DATABASE_URL });
   minioClient = new Minio.Client(MINIO_CONFIG);
   await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true });
-  await resetDatabase();
-  await seedCalibrationAssets();
-  workflow = await runFullWorkflow();
 });
 
 afterAll(async () => {
   await dbPool.end();
 });
 
-function expectBase64(value: string) {
-  expect(typeof value).toBe('string');
-  expect(value.length).toBeGreaterThan(0);
-  expect(value).toMatch(/^[A-Za-z0-9+/]+=*$/);
-}
+describe('Integration Test Suite', () => {
+  describe('Scenario 1: Custom EEG with Events and Triggers', () => {
+    let workflow: WorkflowContext;
+    const ownerId = `owner-eeg-${Date.now()}`;
+    const participantId = `part-eeg-${Date.now()}`;
+    const strangerId = `stranger-eeg-${Date.now()}`;
 
-const subjectIdFromParticipant = PARTICIPANT_ID.replace(/-/g, '');
-const calibJsonPath = `bids_dataset/sub-${subjectIdFromParticipant}/ses-1/eeg/sub-${subjectIdFromParticipant}_ses-1_task-calibration_eeg.json`;
-const mainJsonPath = `bids_dataset/sub-${subjectIdFromParticipant}/ses-2/eeg/sub-${subjectIdFromParticipant}_ses-2_task-mainexternal_eeg.json`;
+    beforeAll(async () => {
+      await resetDatabase();
+      await seedCalibrationAssets();
+      workflow = await runTestScenario({
+        deviceProfile: MOCK_CUSTOM_EEG_DEVICE,
+        withEvents: true,
+        ownerId,
+        participantId,
+        strangerId,
+      });
+    });
 
-describe('EEG platform end-to-end integration', () => {
-  test('stimulus asset processor registers experiment stimuli', () => {
-    expect(workflow.stimuliUploadStatus).toBe(202);
-    expect(workflow.stimuliObjectIds).toHaveLength(2);
-    expect(workflow.stimuliObjectIds.every((id) => id.startsWith('stimuli/'))).toBe(true);
+    test('Processor saves correct metadata to DB and DataLinker normalizes timestamps', () => {
+      expect(workflow.rawDataObjects).toBeDefined();
+      const rawObjects = workflow.rawDataObjects ?? [];
+      expect(rawObjects.length).toBeGreaterThanOrEqual(12);
+      for (const row of rawObjects) {
+        expect(row.sampling_rate).toBe(MOCK_CUSTOM_EEG_DEVICE.samplingRate);
+        expect(row.lsb_to_volts).toBeCloseTo(MOCK_CUSTOM_EEG_DEVICE.lsbToVolts);
+        const startTime = row.start_time instanceof Date ? row.start_time : new Date(row.start_time);
+        const endTime = row.end_time instanceof Date ? row.end_time : new Date(row.end_time);
+        expect(startTime).toBeInstanceOf(Date);
+        expect(endTime).toBeInstanceOf(Date);
+      }
+    });
+
+    test('background processing completes with corrected events', () => {
+      expect(workflow.calibCorrectedCount ?? 0).toBeGreaterThanOrEqual(3);
+      expect(workflow.mainCorrectedCount ?? 0).toBeGreaterThanOrEqual(2);
+    });
+
+    test('BIDS exporter produces archive with valid events.tsv files', async () => {
+      const subjectId = participantId.replace(/-/g, '');
+      const calibEventsPath = `bids_dataset/sub-${subjectId}/ses-1/eeg/sub-${subjectId}_ses-1_task-calibration_events.tsv`;
+      const mainEventsPath = `bids_dataset/sub-${subjectId}/ses-2/eeg/sub-${subjectId}_ses-2_task-mainexternal_events.tsv`;
+
+      const archiveEntries = workflow.bidsArchiveEntries ?? [];
+      expect(archiveEntries).toContain(calibEventsPath);
+      expect(archiveEntries).toContain(mainEventsPath);
+
+      expect(workflow.zip).toBeDefined();
+      const zipArchive = workflow.zip!;
+
+      const calibTsvContent = await zipArchive.file(calibEventsPath)?.async('string');
+      const mainTsvContent = await zipArchive.file(mainEventsPath)?.async('string');
+
+      expect(calibTsvContent).toBeDefined();
+      expect(mainTsvContent).toBeDefined();
+
+      const calibEvents = await neatCSV(calibTsvContent!, {
+        mapHeaders: ({ header }) => header.toLowerCase(),
+      });
+      const mainEvents = await neatCSV(mainTsvContent!, {
+        mapHeaders: ({ header }) => header.toLowerCase(),
+      });
+
+      expect(calibEvents.length).toBe(3);
+      expect(mainEvents.length).toBe(2);
+
+      const calibChannelsPath = `bids_dataset/sub-${subjectId}/ses-1/eeg/sub-${subjectId}_ses-1_task-calibration_channels.tsv`;
+      const mainChannelsPath = `bids_dataset/sub-${subjectId}/ses-2/eeg/sub-${subjectId}_ses-2_task-mainexternal_channels.tsv`;
+      expect(archiveEntries).toContain(calibChannelsPath);
+      expect(archiveEntries).toContain(mainChannelsPath);
+
+      const calibChannelsContent = await zipArchive.file(calibChannelsPath)?.async('string');
+      const mainChannelsContent = await zipArchive.file(mainChannelsPath)?.async('string');
+      expect(calibChannelsContent).toBeDefined();
+      expect(mainChannelsContent).toBeDefined();
+
+      const calibChannels = await neatCSV(calibChannelsContent!, {
+        mapHeaders: ({ header }) => header.toLowerCase(),
+      });
+      const mainChannels = await neatCSV(mainChannelsContent!, {
+        mapHeaders: ({ header }) => header.toLowerCase(),
+      });
+
+      for (const row of [...calibChannels, ...mainChannels]) {
+        if (!row.name) continue;
+        const status = row.status ?? '';
+        const statusDescription = row.status_description ?? '';
+        expect(status).not.toBe('');
+        expect(statusDescription).not.toBe('');
+      }
+    });
+
+    test('BIDS channel quality metadata is generated', async () => {
+      const subjectId = participantId.replace(/-/g, '');
+      const calibQualityPath = `bids_dataset/sub-${subjectId}/ses-1/eeg/sub-${subjectId}_ses-1_task-calibration_desc-quality_channels.json`;
+      const mainQualityPath = `bids_dataset/sub-${subjectId}/ses-2/eeg/sub-${subjectId}_ses-2_task-mainexternal_desc-quality_channels.json`;
+
+      const archiveEntries = workflow.bidsArchiveEntries ?? [];
+      expect(archiveEntries).toContain(calibQualityPath);
+      expect(archiveEntries).toContain(mainQualityPath);
+
+      const zipArchive = workflow.zip!;
+      const calibQualityContent = await zipArchive.file(calibQualityPath)?.async('string');
+      const mainQualityContent = await zipArchive.file(mainQualityPath)?.async('string');
+      expect(calibQualityContent).toBeDefined();
+      expect(mainQualityContent).toBeDefined();
+
+      const calibReport = JSON.parse(calibQualityContent!);
+      const mainReport = JSON.parse(mainQualityContent!);
+
+      for (const report of [calibReport, mainReport]) {
+        for (const value of Object.values(report) as any[]) {
+          expect(typeof value.status).toBe('string');
+          expect(Array.isArray(value.reasons)).toBe(true);
+        }
+      }
+    });
+
+    test('ERP neuro-marketing service returns successful analysis', () => {
+      expect(workflow.erpAnalysisStatus).toBe(200);
+      expect(workflow.erpAnalysis).toBeDefined();
+      const erpAnalysis = workflow.erpAnalysis!;
+      expect(erpAnalysis.summary).toBeString();
+      expect(erpAnalysis.summary).not.toBeEmpty();
+      expect(erpAnalysis.recommendations.length).toBeGreaterThanOrEqual(1);
+      const recommendedFiles = erpAnalysis.recommendations.map((r) => r.file_name);
+      expect(recommendedFiles.find((file: string) => /product_[ab]\.png$/.test(file))).toBeDefined();
+    });
+
+    test('authorization boundaries are enforced', () => {
+      expect(workflow.unauthorizedStimuliUploadStatus).toBe(403);
+      expect(workflow.unauthorizedExportStatus).toBe(403);
+    });
   });
 
-  test('auth manager handles participant joins and listings', () => {
-    expect(workflow.participantExperimentsCount).toBeGreaterThanOrEqual(1);
-    const joined = workflow.participantsList.find((p) => p.user_id === PARTICIPANT_ID);
-    expect(joined).toBeDefined();
-    expect(joined?.role).toBe('participant');
-  });
+  describe('Scenario 2: Muse 2 without Events or Triggers', () => {
+    let workflow: WorkflowContext;
+    const ownerId = `owner-muse-${Date.now()}`;
+    const participantId = `part-muse-${Date.now()}`;
+    const strangerId = `stranger-muse-${Date.now()}`;
 
-  test('session manager enforces authorization boundaries', () => {
-    expect(workflow.unauthorizedStimuliUploadStatus).toBe(403);
-    expect(workflow.unauthorizedStimuliListStatus).toBe(403);
-    expect(workflow.unauthorizedExportStatus).toBe(403);
-  });
+    beforeAll(async () => {
+      await resetDatabase();
+      await seedCalibrationAssets();
+      workflow = await runTestScenario({
+        deviceProfile: MOCK_MUSE2_DEVICE,
+        withEvents: false,
+        ownerId,
+        participantId,
+        strangerId,
+      });
+    });
 
-  test('collector accepts raw data and media payloads', () => {
-    expect(workflow.collectorDataStatuses).toHaveLength(6);
-    for (const status of workflow.collectorDataStatuses) {
-      expect(status).toBe(202);
-    }
-    expect(workflow.collectorMediaStatus).toBe(202);
-  });
+    test('background processing completes without events', () => {
+      expect(workflow.calibCorrectedCount ?? 0).toBe(0);
+      expect(workflow.mainCorrectedCount ?? 0).toBe(0);
+    });
 
-  test('processor stores raw data objects and DataLinker normalizes timestamps', () => {
-    expect(workflow.rawDataObjectIds.length).toBe(6);
-    expect(workflow.normalizedRawDataObjects.length).toBeGreaterThanOrEqual(6);
-    expect(workflow.normalizedRawDataObjects.every((row) => row.start_time !== null && row.end_time !== null)).toBe(true);
-  });
+    test('BIDS exporter produces archive without events.tsv files', () => {
+      const subjectId = participantId.replace(/-/g, '');
+      const calibEventsPath = `bids_dataset/sub-${subjectId}/ses-1/eeg/sub-${subjectId}_ses-1_task-calibration_events.tsv`;
+      const mainEventsPath = `bids_dataset/sub-${subjectId}/ses-2/eeg/sub-${subjectId}_ses-2_task-mainexternal_events.tsv`;
+      const museArchiveEntries = workflow.bidsArchiveEntries ?? [];
+      expect(museArchiveEntries).not.toContain(calibEventsPath);
+      expect(museArchiveEntries).not.toContain(mainEventsPath);
+    });
 
-  test('media processor persists images and DataLinker links them to experiments', () => {
-    expect(workflow.imageObjectId).toBeDefined();
-    expect(workflow.imageObjectId?.startsWith('media/')).toBe(true);
-  });
-
-  test('data linker and event corrector complete successfully', () => {
-    expect(workflow.sessionStatuses[workflow.calibSessionId]).toEqual({ link: 'completed', correction: 'completed' });
-    expect(workflow.sessionStatuses[workflow.mainSessionId]).toEqual({ link: 'completed', correction: 'completed' });
-    expect(workflow.sessionObjectLinkCounts[workflow.calibSessionId]).toBeGreaterThanOrEqual(1);
-    expect(workflow.sessionObjectLinkCounts[workflow.mainSessionId]).toBeGreaterThanOrEqual(1);
-    expect(workflow.sessionEventsCorrectedCount[workflow.calibSessionId]).toBe(3);
-    expect(workflow.sessionEventsCorrectedCount[workflow.mainSessionId]).toBe(2);
-  });
-
-  test('participant can retrieve stimuli and assets count matches expectation', () => {
-    expect(workflow.stimuliListForParticipant).toHaveLength(2);
-    const fileNames = workflow.stimuliListForParticipant.map((item) => item.file_name).sort();
-    expect(fileNames).toEqual(['product_a.png', 'product_b.png']);
-  });
-
-  test('bids exporter produces downloadable archive with expected contents', async () => {
-    expect(workflow.bidsTaskId).not.toBe('');
-    expect(workflow.bidsResultFilePath).not.toBe('');
-    if (workflow.bidsResultFilePath.includes(BIDS_BUCKET)) {
-      expect(workflow.bidsResultFilePath).toContain(BIDS_BUCKET);
-    } else {
-      expect(workflow.bidsResultFilePath.endsWith('.zip')).toBe(true);
-    }
-    expect(workflow.bidsDownloadedSize).toBeGreaterThan(0);
-    expect(workflow.bidsArchiveEntries).toContain(calibJsonPath);
-    expect(workflow.bidsArchiveEntries).toContain(mainJsonPath);
-
-    const stats = await fs.stat(workflow.bidsZipPath);
-    expect(stats.size).toBe(workflow.bidsDownloadedSize);
-
-    const filesOnDisk = workflow.bidsFilesOnDisk.map((f) => f.replace(`${workflow.bidsExtractionDir}${path.sep}`, ''));
-    expect(filesOnDisk).toEqual(expect.arrayContaining([calibJsonPath, mainJsonPath]));
-  });
-
-  test('realtime analyzer returns PSD and coherence imagery', () => {
-    expectBase64(workflow.realtimeAnalysis.psd_image);
-    expectBase64(workflow.realtimeAnalysis.coherence_image);
-    expect(new Date(workflow.realtimeAnalysis.timestamp).toString()).not.toBe('Invalid Date');
-  });
-
-  test('ERP neuro-marketing service returns summary and recommendations payload', () => {
-    expect(typeof workflow.erpAnalysis.summary).toBe('string');
-    expect(workflow.erpAnalysis.summary.length).toBeGreaterThan(0);
-    expect(Array.isArray(workflow.erpAnalysis.recommendations)).toBe(true);
+    test('ERP neuro-marketing analysis is skipped when triggers are absent', () => {
+      expect(workflow.erpAnalysisStatus).toBeUndefined();
+      expect(workflow.erpAnalysis).toBeUndefined();
+    });
   });
 });

@@ -90,11 +90,10 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
     await dbClient.query('BEGIN');
 
     const updateQuery =
-      'UPDATE sessions SET end_time = $1, device_id = $2, clock_offset_info = $3 WHERE session_id = $4 RETURNING session_type';
+      'UPDATE sessions SET end_time = $1, device_id = $2 WHERE session_id = $3 RETURNING session_type';
     const sessionUpdateResult = await dbClient.query(updateQuery, [
       metadata.end_time,
       metadata.device_id,
-      metadata.clock_offset_info ? JSON.stringify(metadata.clock_offset_info) : null,
       metadata.session_id,
     ]);
 
@@ -173,11 +172,6 @@ sessionsRouter.post('/end', requireAuth('participant'), async (c) => {
 
     const jobPayload: DataLinkerJobPayload = {
       session_id: metadata.session_id,
-      user_id: metadata.user_id,
-      experiment_id: metadata.experiment_id,
-      session_start_utc: metadata.start_time,
-      session_end_utc: metadata.end_time,
-      clock_offset_info: metadata.clock_offset_info,
     };
     try {
       getAmqpChannel().sendToQueue(
