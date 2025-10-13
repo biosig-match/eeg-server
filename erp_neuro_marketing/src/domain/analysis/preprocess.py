@@ -64,6 +64,28 @@ def create_epochs_from_bids(
 
             logger.info("Reading BIDS data from: %s", bids_path.directory)
             raw = read_raw_bids(bids_path=bids_path, verbose=False)
+            raw = raw.copy()
+
+            bad_channels = raw.info.get("bads", [])
+            if bad_channels:
+                if len(bad_channels) >= len(raw.ch_names):
+                    logger.warning(
+                        "All channels for sub-%s, ses-%s are marked bad. Skipping session.",
+                        subject_id,
+                        session_label,
+                    )
+                    continue
+                logger.info("Dropping bad channels for subject %s: %s", subject_id, bad_channels)
+                raw.drop_channels(bad_channels)
+
+            picks = mne.pick_types(raw.info, eeg=True, eog=True, emg=True, meg=False, stim=False)
+            if len(picks) == 0:
+                logger.warning(
+                    "No usable EEG/EMG/EOG channels remain after dropping bad channels for %s. Skipping.",
+                    bids_path,
+                )
+                continue
+            raw.pick(picks=picks)
 
             events_path = bids_path.copy().update(suffix='events', extension='.tsv')
             if not events_path.fpath.exists():

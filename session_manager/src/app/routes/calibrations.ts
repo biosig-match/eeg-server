@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { dbPool } from '../../infrastructure/db';
-// requireAuth の代わりに新しい requireUser をインポート
 import { requireUser } from '../middleware/auth';
 
 /**
@@ -14,9 +13,7 @@ export const calibrationsRouter = new Hono();
  * サーバーに登録されている全てのキャリブレーション用アセットのリストを取得します。
  * 認証されたユーザー（X-User-Idを持つユーザー）のみがアクセスできます。
  */
-// ミドルウェアを requireAuth('participant') から requireUser() に変更
 calibrationsRouter.get('/', requireUser(), async (c) => {
-  // エラーの原因となっていた行は不要なため削除
   try {
     const result = await dbPool.query(
       'SELECT item_id, file_name, item_type, description FROM calibration_items ORDER BY file_name',

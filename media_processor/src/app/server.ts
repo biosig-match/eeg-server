@@ -323,14 +323,31 @@ async function processMessage(msg: ConsumeMessage | null) {
   }
 }
 
-async function ensureMinioBucket() {
-  const bucketExists = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET)
-  if (!bucketExists) {
-    console.log(`[MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" does not exist. Creating...`)
-    await minioClient.makeBucket(config.MINIO_MEDIA_BUCKET)
-    console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" created.`)
-  } else {
-    console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" already exists.`)
+async function ensureMinioBucket(maxAttempts = 5, baseDelayMs = 1_000) {
+  let attempt = 0
+  while (attempt < maxAttempts) {
+    attempt += 1
+    try {
+      const bucketExists = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET)
+      if (!bucketExists) {
+        console.log(`[MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" does not exist. Creating...`)
+        await minioClient.makeBucket(config.MINIO_MEDIA_BUCKET)
+        console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" created.`)
+      } else {
+        console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" already exists.`)
+      }
+      return
+    } catch (error) {
+      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), 10_000)
+      console.error(
+        `❌ [MinIO] Bucket check failed (attempt ${attempt}/${maxAttempts}).`,
+        error,
+      )
+      if (attempt >= maxAttempts) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
   }
 }
 

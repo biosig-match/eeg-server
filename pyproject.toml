@@ -47,6 +47,7 @@ erp_neuro_marketing = [
   "scikit-learn==1.5.1",
   "numpy==1.26.4",
   "openai==1.40.0",
+  "google-genai==1.41.0",
 ]
 analysis = ["mne>=1.6", "mne-bids==0.15", "matplotlib"]
 
