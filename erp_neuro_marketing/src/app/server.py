@@ -2,13 +2,15 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from ..config.env import settings
 from .dependencies.auth import verify_owner_role
-from .schemas import AnalysisResponse
+from .schemas import AnalysisResponse, AnalysisResultSnapshot, ProductRecommendation
 from ..domain.analysis.orchestrator import run_full_analysis
+from ..infrastructure.db import get_latest_analysis_result, save_analysis_result
 
 # --- ロギング設定 ---
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
@@ -40,7 +42,8 @@ async def startup_event():
 async def analyze_experiment(
     experiment_id: UUID,
     # 権限チェックをDI (Dependency Injection) を使用して実行
-    authorized: bool = Depends(verify_owner_role)
+    authorized: bool = Depends(verify_owner_role),
+    x_user_id: str = Header(..., alias="X-User-Id"),
 ):
     """
     指定された実験IDに基づいて、以下の処理を実行します。
@@ -62,11 +65,23 @@ async def analyze_experiment(
     try:
         recommendations, summary = await run_full_analysis(experiment_id)
 
-        return AnalysisResponse(
+        analysis_response = AnalysisResponse(
             experiment_id=experiment_id,
             summary=summary,
             recommendations=recommendations,
         )
+
+        try:
+            save_analysis_result(analysis_response, x_user_id)
+        except Exception as db_error:
+            logger.error(
+                "Failed to save analysis result for experiment %s: %s. Returning response without persistence.",
+                experiment_id,
+                db_error,
+                exc_info=True,
+            )
+
+        return analysis_response
     except HTTPException as http_exc:
         # サービス間通信やデータ不足のエラーをクライアントに転送
         logger.error(f"HTTP exception during analysis for {experiment_id}: {http_exc.detail}")
@@ -75,3 +90,46 @@ async def analyze_experiment(
         # 予期せぬ内部エラー
         logger.exception(f"An unexpected error occurred during analysis for experiment_id: {experiment_id}")
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
+
+@app.get(
+    "/api/v1/neuro-marketing/experiments/{experiment_id}/analysis-results",
+    response_model=AnalysisResultSnapshot,
+    summary="最新のニューロマーケティング分析結果を取得します。",
+)
+async def get_analysis_result(
+    experiment_id: UUID,
+    authorized: bool = Depends(verify_owner_role),
+    x_user_id: str = Header(..., alias="X-User-Id"),
+):
+    if not authorized:
+        raise HTTPException(status_code=403, detail="Forbidden: User is not the owner of this experiment.")
+
+    logger.info("Latest analysis result requested for experiment %s by %s", experiment_id, x_user_id)
+
+    record = get_latest_analysis_result(experiment_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="No completed analysis result found for this experiment.")
+
+    try:
+        recommendations = [ProductRecommendation(**rec) for rec in record['recommendations']]
+    except (ValidationError, TypeError, ValueError, KeyError) as validation_error:
+        logger.error(
+            "Failed to deserialize stored analysis result for experiment %s (analysis_id=%s)",
+            experiment_id,
+            record['analysis_id'],
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="The stored analysis result is corrupted. Please re-run the analysis or contact support.",
+        ) from validation_error
+
+    return AnalysisResultSnapshot(
+        analysis_id=record['analysis_id'],
+        experiment_id=record['experiment_id'],
+        summary=record['summary'],
+        recommendations=recommendations,
+        generated_at=record['generated_at'],
+        requested_by_user_id=record['requested_by_user_id'],
+    )

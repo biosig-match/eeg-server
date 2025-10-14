@@ -34,3 +34,5 @@ integration_test/test-output
 bench-results/
 **/dist/
 **/build/
+
+biosig-match-docs/

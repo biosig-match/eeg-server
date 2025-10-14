@@ -23,7 +23,7 @@ from .preprocess import create_epochs_from_bids
 # --- ロガー設定 ---
 logger = logging.getLogger(__name__)
 
-MAIN_SESSION_TYPES = {'main', 'main_integrated', 'main_external'}
+MAIN_SESSION_TYPES = {'main', 'main_integrated', 'main_external', 'main_task'}
 
 async def generate_ai_summary(recommendations: List[dict]) -> str:
 
