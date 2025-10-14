@@ -26,11 +26,12 @@ CREATE TABLE IF NOT EXISTS experiment_participants (
 CREATE TABLE IF NOT EXISTS sessions (
     session_id VARCHAR(255) PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,
-    experiment_id UUID NOT NULL REFERENCES experiments(experiment_id) ON DELETE CASCADE,
+    experiment_id UUID REFERENCES experiments(experiment_id) ON DELETE SET NULL,
     device_id VARCHAR(255),
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ,
     session_type VARCHAR(50),
+    clock_offset_info JSONB,
     link_status VARCHAR(50) NOT NULL DEFAULT 'pending',
     event_correction_status VARCHAR(50) NOT NULL DEFAULT 'pending'
 );

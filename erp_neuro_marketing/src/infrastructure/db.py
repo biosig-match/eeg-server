@@ -1,11 +1,13 @@
 from contextlib import contextmanager
-from typing import List
+import json
+from datetime import datetime
+from typing import List, Optional
 from uuid import UUID
 
 import psycopg2
 from psycopg2.extras import DictCursor
 
-from ..app.schemas import ProductRecommendation
+from ..app.schemas import AnalysisResponse, ProductRecommendation
 from ..config.env import settings
 
 @contextmanager
@@ -39,3 +41,57 @@ def get_product_details_from_db(conn, experiment_id: UUID, file_names: List[str]
         
         # Pydanticモデルに変換
         return [ProductRecommendation(**dict(row)) for row in rows]
+
+
+def save_analysis_result(result: AnalysisResponse, requested_by_user_id: str) -> None:
+    payload = {
+        'summary': result.summary,
+        'recommendations': [rec.dict() for rec in result.recommendations],
+    }
+
+    with get_db_connection() as conn:
+        with get_db_cursor(conn) as cur:
+            cur.execute(
+                """
+                INSERT INTO erp_analysis_results (experiment_id, requested_by_user_id, status, result_data, completed_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                """,
+                (str(result.experiment_id), requested_by_user_id, 'completed', json.dumps(payload)),
+            )
+        conn.commit()
+
+
+def get_latest_analysis_result(experiment_id: UUID) -> Optional[dict]:
+    with get_db_connection() as conn:
+        with get_db_cursor(conn) as cur:
+            cur.execute(
+                """
+                SELECT analysis_id,
+                       experiment_id,
+                       requested_by_user_id,
+                       result_data,
+                       completed_at,
+                       created_at
+                FROM erp_analysis_results
+                WHERE experiment_id = %s AND status = 'completed'
+                ORDER BY completed_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+                """,
+                (str(experiment_id),),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return None
+
+            result_data = row['result_data'] or {}
+            generated_at: Optional[datetime] = row['completed_at'] or row['created_at']
+
+            return {
+                'analysis_id': row['analysis_id'],
+                'experiment_id': UUID(str(row['experiment_id'])),
+                'requested_by_user_id': row['requested_by_user_id'],
+                'summary': result_data.get('summary', ''),
+                'recommendations': result_data.get('recommendations', []),
+                'generated_at': generated_at,
+            }

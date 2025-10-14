@@ -172,6 +172,12 @@ async function linkRawDataToSession(dbClient: PoolClient, session: any) {
 }
 
 async function linkMediaToExperiment(dbClient: PoolClient, session: any) {
+  if (!session.experiment_id) {
+    console.log(
+      `[Link] Session ${session.session_id} is not associated with an experiment. Skipping media linkage.`,
+    );
+    return;
+  }
   const imageUpdateRes = await dbClient.query(
     `UPDATE images SET experiment_id = $1 WHERE session_id = $2 AND experiment_id IS NULL`,
     [session.experiment_id, session.session_id],
