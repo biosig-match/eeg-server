@@ -5,8 +5,20 @@ import fs from 'fs';
 import path from 'path';
 
 // --- 設定 (Configuration) ---
-const COLLECTOR_BASE_URL = 'http://localhost:3000'; // docker-compose.ymlで設定したポート
-const RABBITMQ_URL = 'amqp://guest:guest@localhost:5672'; // docker-compose.ymlで設定したポート
+const collectorHost =
+  process.env.TEST_COLLECTOR_HOST ?? process.env.COLLECTOR_HOST ?? 'collector';
+const collectorPort = process.env.TEST_COLLECTOR_PORT ?? process.env.COLLECTOR_PORT ?? '3000';
+const COLLECTOR_BASE_URL =
+  process.env.TEST_COLLECTOR_BASE_URL ?? process.env.COLLECTOR_BASE_URL ?? `http://${collectorHost}:${collectorPort}`;
+
+const rabbitUser = process.env.TEST_RABBITMQ_USER ?? process.env.RABBITMQ_USER ?? 'guest';
+const rabbitPassword =
+  process.env.TEST_RABBITMQ_PASSWORD ?? process.env.RABBITMQ_PASSWORD ?? 'guest';
+const rabbitHost = process.env.TEST_RABBITMQ_HOST ?? process.env.RABBITMQ_HOST ?? 'rabbitmq';
+const rabbitPort = process.env.TEST_RABBITMQ_PORT ?? process.env.RABBITMQ_PORT ?? '5672';
+const RABBITMQ_URL =
+  process.env.TEST_RABBITMQ_URL ??
+  `amqp://${rabbitUser}:${rabbitPassword}@${rabbitHost}:${rabbitPort}`;
 
 // --- テストデータ (Test Data) ---
 const TEST_USER_ID = 'test-user-001';
@@ -81,6 +93,8 @@ async function testSensorDataEndpoint(channel: amqp.Channel) {
   await channel.bindQueue(queue, 'raw_data_exchange', '');
 
   const dummyPayload = Buffer.from('dummy sensor data').toString('base64');
+  const timestampStartMs = Date.now();
+  const timestampEndMs = timestampStartMs + 1000;
 
   // メッセージを待機するPromise
   const messageReceived = new Promise<amqp.ConsumeMessage>((resolve, reject) => {
@@ -104,6 +118,12 @@ async function testSensorDataEndpoint(channel: amqp.Channel) {
   // APIを叩く
   await axios.post(`${COLLECTOR_BASE_URL}/api/v1/data`, {
     user_id: TEST_USER_ID,
+    session_id: TEST_SESSION_ID,
+    device_id: 'standalone-test-device',
+    timestamp_start_ms: timestampStartMs,
+    timestamp_end_ms: timestampEndMs,
+    sampling_rate: 256,
+    lsb_to_volts: 1.0,
     payload_base64: dummyPayload,
   });
   console.log('  - Sent request to /api/v1/data.');

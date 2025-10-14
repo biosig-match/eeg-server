@@ -9,14 +9,34 @@ import { Buffer } from 'buffer';
 import neatCSV from 'neat-csv';
 import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_corrector/src/domain/services/trigger_timestamps';
 
-const BASE_URL = 'http://localhost:8080/api/v1';
-const DATABASE_URL = 'postgres://admin:password@localhost:5432/eeg_data';
+const baseUrlFromEnv =
+  process.env.TEST_BASE_URL ??
+  (process.env.NGINX_PORT ? `http://localhost:${process.env.NGINX_PORT}/api/v1` : undefined);
+const BASE_URL = baseUrlFromEnv ?? 'http://localhost:8080/api/v1';
+
+const databaseUrlFromEnv =
+  process.env.TEST_DATABASE_URL ??
+  (process.env.POSTGRES_USER &&
+  process.env.POSTGRES_PASSWORD &&
+  process.env.POSTGRES_HOST &&
+  process.env.POSTGRES_PORT &&
+  process.env.POSTGRES_DB
+    ? `postgres://${process.env.POSTGRES_USER}:${process.env.POSTGRES_PASSWORD}@${process.env.POSTGRES_HOST}:${process.env.POSTGRES_PORT}/${process.env.POSTGRES_DB}`
+    : undefined);
+const DATABASE_URL = databaseUrlFromEnv ?? 'postgres://admin:password@localhost:5432/eeg_data';
+
+const rawMinioEndpoint =
+  process.env.TEST_MINIO_ENDPOINT ?? process.env.MINIO_ENDPOINT ?? 'localhost';
+const [minioEndpointHost, minioEndpointPort] = rawMinioEndpoint.split(':');
+const resolvedMinioPort =
+  process.env.TEST_MINIO_PORT ?? process.env.MINIO_PORT ?? (minioEndpointPort || undefined);
+const parsedMinioPort = resolvedMinioPort ? Number(resolvedMinioPort) : NaN;
 const MINIO_CONFIG = {
-  endPoint: 'localhost',
-  port: 9000,
-  useSSL: false,
-  accessKey: 'minioadmin',
-  secretKey: 'minioadmin',
+  endPoint: minioEndpointHost,
+  port: Number.isFinite(parsedMinioPort) ? parsedMinioPort : 9000,
+  useSSL: (process.env.TEST_MINIO_USE_SSL ?? process.env.MINIO_USE_SSL ?? 'false') === 'true',
+  accessKey: process.env.TEST_MINIO_ACCESS_KEY ?? process.env.MINIO_ACCESS_KEY ?? 'minioadmin',
+  secretKey: process.env.TEST_MINIO_SECRET_KEY ?? process.env.MINIO_SECRET_KEY ?? 'minioadmin',
 };
 const MINIO_RAW_DATA_BUCKET = 'raw-data';
 const MINIO_MEDIA_BUCKET = 'media';

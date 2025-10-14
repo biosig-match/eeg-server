@@ -237,18 +237,23 @@ Ingress (Nginx) は以下のエンドポイントを公開します。
    ```
 
 4. **.env ファイルの作成:**
-   プロジェクトのルートディレクトリの`.env.example`を`.env`にコピーします。
+   共有デフォルトは `.env.example` にまとまっています。以下を参考に必要なテンプレートをコピーしてください。
 
    ```bash
    cp .env.example .env
+   cp .env.local.example .env.local   # 任意: 開発者ごとの秘密情報を分離
    ```
 
 5. **コンテナのビルドと起動:**
-   以下のコマンドで、全サービスの Docker イメージをビルドし、バックグラウンドで起動します。
+   開発環境では、ベース定義に `docker-compose.development.yml` を重ねることでローカル専用の volume mount を有効化します。
 
    ```bash
-   docker compose up --build -d
+   docker compose -f docker-compose.yml \
+     -f docker-compose.development.yml \
+     up --build -d
    ```
+
+   `.env.local` を作成した場合は `docker compose --env-file .env.local -f ...` のように `--env-file` を追加してください。
 
 ### 5.2 モバイルアプリ連携のための開発環境設定（WSL2 + Windows）
 

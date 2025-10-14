@@ -1,0 +1,12 @@
+services:
+  db:
+    ports: []
+  rabbitmq:
+    ports: []
+  minio:
+    ports: []
+  erp_neuro_marketing:
+    ports: []
+  ingress:
+    ports:
+      - '0.0.0.0:${NGINX_PORT:-80}:80'
