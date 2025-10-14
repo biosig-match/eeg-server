@@ -14,7 +14,6 @@ def create_task_in_db(task_id: UUID, experiment_id: UUID):
                 """,
                 (str(task_id), str(experiment_id))
             )
-            conn.commit()
 
 def get_task_status(task_id: UUID) -> TaskStatus | None:
     """Retrieves the current status of an export task from the database."""
@@ -63,4 +62,3 @@ def update_task_status(task_id: UUID, progress: int | None = None, status: str |
             params.append(str(task_id))
             
             cur.execute(query, tuple(params))
-            conn.commit()

@@ -4,7 +4,11 @@ import { z } from 'zod';
 import { parse as csvParse } from 'csv-parse/sync';
 import { dbPool } from '../../infrastructure/db';
 import { getAmqpChannel } from '../../infrastructure/queue';
-import { sessionEndMetadataSchema, eventLogCsvRowSchema } from '../schemas/session';
+import {
+  sessionEndMetadataSchema,
+  eventLogCsvRowSchema,
+  clockOffsetInfoSchema,
+} from '../schemas/session';
 import type { DataLinkerJobPayload } from '../types';
 import { config } from '../../config/env';
 import { requireUser } from '../middleware/auth';
@@ -20,7 +24,7 @@ const sessionStartMetadataSchema = sessionEndMetadataSchema.pick({
   start_time: true,
   session_type: true,
 }).extend({
-  clock_offset_info: sessionEndMetadataSchema.shape.clock_offset_info,
+  clock_offset_info: clockOffsetInfoSchema,
 });
 
 const isFormData = (value: ParsedBody): value is FormData =>
@@ -129,8 +133,8 @@ sessionsRouter.post(
 
     try {
       const query =
-        'INSERT INTO sessions (session_id, user_id, experiment_id, start_time, session_type, clock_offset_info) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (session_id) DO NOTHING';
-      await dbPool.query(query, [
+        'INSERT INTO sessions (session_id, user_id, experiment_id, start_time, session_type, clock_offset_info) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (session_id) DO NOTHING RETURNING session_id';
+      const result = await dbPool.query(query, [
         metadata.session_id,
         requesterId,
         metadata.experiment_id ?? null,
@@ -138,6 +142,23 @@ sessionsRouter.post(
         metadata.session_type,
         metadata.clock_offset_info ?? null,
       ]);
+      if (result.rowCount === 0) {
+        const existingSession = await dbPool.query(
+          'SELECT user_id FROM sessions WHERE session_id = $1',
+          [metadata.session_id],
+        );
+
+        const existingOwner = existingSession.rows[0]?.user_id as string | null | undefined;
+        if (existingOwner && existingOwner !== requesterId) {
+          return c.json(
+            { error: 'Session ID already exists and belongs to another user.' },
+            409,
+          );
+        }
+
+        return c.json({ message: 'Session already exists.' }, 200);
+      }
+
       return c.json({ message: 'Session started successfully.' }, 201);
     } catch (error) {
       console.error('Failed to start session:', error);
@@ -166,6 +187,7 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
 
   const eventsLogCsvFile = toFileValue(eventsRaw);
   const dbClient = await dbPool.connect();
+  let releaseDestroyedClient = false;
   try {
     const metadata = sessionEndMetadataSchema.parse(JSON.parse(metadataString));
 
@@ -322,7 +344,9 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
     try {
       await dbClient.query('ROLLBACK');
     } catch (rollbackError) {
-      console.error('Failed to rollback transaction:', rollbackError);
+      console.error('Failed to rollback transaction. Destroying connection.', rollbackError);
+      dbClient.release(true);
+      releaseDestroyedClient = true;
     }
     console.error('Failed to end session:', error);
     if (error instanceof z.ZodError) {
@@ -330,6 +354,8 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
     }
     return c.json({ error: 'Failed to end session' }, 500);
   } finally {
-    dbClient.release();
+    if (!releaseDestroyedClient) {
+      dbClient.release();
+    }
   }
 });

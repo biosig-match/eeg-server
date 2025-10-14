@@ -12,16 +12,25 @@ from ..config.env import settings
 
 @contextmanager
 def get_db_connection():
-    """Provides a transactional database connection."""
+    """Provides a transactional database connection with automatic commit/rollback."""
     conn = psycopg2.connect(settings.database_url)
     try:
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
+@contextmanager
 def get_db_cursor(conn):
-    """Returns a dictionary cursor."""
-    return conn.cursor(cursor_factory=DictCursor)
+    """Returns a dictionary cursor with guaranteed cleanup."""
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        yield cur
+    finally:
+        cur.close()
 
 def get_product_details_from_db(conn, experiment_id: UUID, file_names: List[str]) -> List[ProductRecommendation]:
     """
@@ -58,7 +67,6 @@ def save_analysis_result(result: AnalysisResponse, requested_by_user_id: str) ->
                 """,
                 (str(result.experiment_id), requested_by_user_id, 'completed', json.dumps(payload)),
             )
-        conn.commit()
 
 
 def get_latest_analysis_result(experiment_id: UUID) -> Optional[dict]:

@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from ..config.env import settings
 from .dependencies.auth import verify_owner_role
@@ -70,7 +71,15 @@ async def analyze_experiment(
             recommendations=recommendations,
         )
 
-        save_analysis_result(analysis_response, x_user_id)
+        try:
+            save_analysis_result(analysis_response, x_user_id)
+        except Exception as db_error:
+            logger.error(
+                "Failed to save analysis result for experiment %s: %s. Returning response without persistence.",
+                experiment_id,
+                db_error,
+                exc_info=True,
+            )
 
         return analysis_response
     except HTTPException as http_exc:
@@ -102,7 +111,19 @@ async def get_analysis_result(
     if not record:
         raise HTTPException(status_code=404, detail="No completed analysis result found for this experiment.")
 
-    recommendations = [ProductRecommendation(**rec) for rec in record['recommendations']]
+    try:
+        recommendations = [ProductRecommendation(**rec) for rec in record['recommendations']]
+    except (ValidationError, TypeError, ValueError, KeyError) as validation_error:
+        logger.error(
+            "Failed to deserialize stored analysis result for experiment %s (analysis_id=%s)",
+            experiment_id,
+            record['analysis_id'],
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="The stored analysis result is corrupted. Please re-run the analysis or contact support.",
+        ) from validation_error
 
     return AnalysisResultSnapshot(
         analysis_id=record['analysis_id'],
