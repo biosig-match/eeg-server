@@ -15,9 +15,9 @@ import numpy as np
 from mne_connectivity import spectral_connectivity_epochs
 from mne_connectivity.viz import plot_connectivity_circle
 
-from ...config.env import settings
-from ..applications.base import AnalysisResult, RealtimeApplication
-from ..state import UserState
+from ....config.env import settings
+from ...base import AnalysisResult, RealtimeApplication
+from ....state import UserState
 
 def _fig_to_base64(fig) -> str:
     buffer = io.BytesIO()

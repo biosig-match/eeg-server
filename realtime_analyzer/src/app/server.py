@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from flask import Flask, jsonify
 
-from .applications.psd_coherence import PsdCoherenceApplication
+from .applications import discover_applications
 from .host import RealtimeApplicationHost
 
 app = Flask(__name__)
 
 host = RealtimeApplicationHost()
-host.register_application(PsdCoherenceApplication())
+for application in discover_applications():
+    host.register_application(application)
 host.start_background_threads()
 
 

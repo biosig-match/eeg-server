@@ -27,6 +27,8 @@ const TEST_OUTPUT_DIR = path.resolve(__dirname, '../test-output');
 
 const DB_POLL_TIMEOUT = 30000;
 const TASK_POLL_TIMEOUT = 120000;
+const REALTIME_ANALYZER_POLL_TIMEOUT = 60000;
+const REALTIME_ANALYZER_POLL_INTERVAL = 2000;
 
 interface ElectrodeConfig {
   name: string;
@@ -91,6 +93,26 @@ interface ErrorResponse {
   detail?: string;
 }
 
+interface RealtimeApplicationSummary {
+  id: string;
+  display_name: string;
+  description: string;
+}
+
+interface RealtimeApplicationResult {
+  psd_image: string;
+  coherence_image: string;
+  timestamp: string;
+  bad_channels: string[];
+  analysis_channels: string[];
+  channel_quality: Record<string, unknown>;
+}
+
+interface RealtimeAnalysisResponse {
+  applications: Record<string, RealtimeApplicationResult>;
+  available_applications: RealtimeApplicationSummary[];
+}
+
 interface RawDataObjectRow {
   object_id: string;
   sampling_rate: number;
@@ -117,6 +139,7 @@ interface WorkflowContext {
   mainLinkedObjectsCount?: number;
   erpAnalysisStatus?: number;
   erpAnalysis?: ErpAnalysisResponse;
+  realtimeAnalysis?: RealtimeAnalysisResponse;
 }
 interface ScenarioConfig {
   deviceProfile: DeviceProfile;
@@ -163,6 +186,32 @@ async function pollForTaskStatus(
     await sleep(2000);
   }
   throw new Error(`Timed out waiting for export task ${taskId} to be ${expectedStatus}`);
+}
+
+async function pollForRealtimeAnalysis(
+  userId: string,
+  timeout = REALTIME_ANALYZER_POLL_TIMEOUT,
+): Promise<RealtimeAnalysisResponse> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const response = await fetch(`${BASE_URL}/users/${userId}/analysis`);
+    if (response.status === 202) {
+      await sleep(REALTIME_ANALYZER_POLL_INTERVAL);
+      continue;
+    }
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(
+        `Realtime analyzer request failed with status ${response.status}: ${body}`,
+      );
+    }
+    const payload = (await response.json()) as RealtimeAnalysisResponse;
+    if (Object.keys(payload.applications ?? {}).length > 0) {
+      return payload;
+    }
+    await sleep(REALTIME_ANALYZER_POLL_INTERVAL);
+  }
+  throw new Error(`Timed out waiting for realtime analysis for user ${userId}`);
 }
 
 function createMockBinaryPayload(
@@ -489,6 +538,13 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
     throw new Error('Session metadata is missing from workflow context.');
   }
 
+  console.log('\n--- 📈 [Realtime] リアルタイム解析結果の確認 ---');
+  const realtimeAnalysis = await pollForRealtimeAnalysis(participantId);
+  ctx.realtimeAnalysis = realtimeAnalysis;
+  console.log(
+    `✅ Realtime analyzer returned results for ${Object.keys(realtimeAnalysis.applications).length} applications.`,
+  );
+
   const [
     calibRawObjectCount,
     mainRawObjectCount,
@@ -677,6 +733,22 @@ describe('Integration Test Suite', () => {
       expect(workflow.mainCorrectedCount ?? 0).toBeGreaterThanOrEqual(2);
     });
 
+    test('realtime analyzer returns PSD and coherence images', () => {
+      expect(workflow.realtimeAnalysis).toBeDefined();
+      const realtimeAnalysis = workflow.realtimeAnalysis!;
+      const summary = realtimeAnalysis.available_applications.find(
+        (application) => application.id === 'psd_coherence',
+      );
+      expect(summary).toBeDefined();
+      const result = realtimeAnalysis.applications.psd_coherence;
+      expect(result).toBeDefined();
+      expect(result.psd_image).toBeString();
+      expect(result.psd_image).not.toBeEmpty();
+      expect(result.coherence_image).toBeString();
+      expect(result.coherence_image).not.toBeEmpty();
+      expect(result.analysis_channels.length).toBeGreaterThan(1);
+    });
+
     test('corrected event onsets remain strictly increasing per session', async () => {
       const subjectId = participantId.replace(/-/g, '');
       const zipArchive = workflow.zip!;
@@ -855,6 +927,22 @@ describe('Integration Test Suite', () => {
     test('background processing completes without events', () => {
       expect(workflow.calibCorrectedCount ?? 0).toBe(0);
       expect(workflow.mainCorrectedCount ?? 0).toBe(0);
+    });
+
+    test('realtime analyzer returns PSD and coherence images for Muse device', () => {
+      expect(workflow.realtimeAnalysis).toBeDefined();
+      const realtimeAnalysis = workflow.realtimeAnalysis!;
+      const summary = realtimeAnalysis.available_applications.find(
+        (application) => application.id === 'psd_coherence',
+      );
+      expect(summary).toBeDefined();
+      const result = realtimeAnalysis.applications.psd_coherence;
+      expect(result).toBeDefined();
+      expect(result.psd_image).toBeString();
+      expect(result.psd_image).not.toBeEmpty();
+      expect(result.coherence_image).toBeString();
+      expect(result.coherence_image).not.toBeEmpty();
+      expect(result.analysis_channels.length).toBeGreaterThan(1);
     });
 
     test('BIDS exporter produces archive without events.tsv files', () => {
