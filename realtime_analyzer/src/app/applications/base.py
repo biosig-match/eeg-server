@@ -17,18 +17,6 @@ class RealtimeApplication(ABC):
     display_name: str
     description: str
 
-    def on_registered(self) -> None:
-        """Hook invoked when the application is registered with the host."""
-
-    def before_analysis_cycle(self) -> None:
-        """Hook executed before each host analysis cycle."""
-
-    def after_analysis_cycle(self) -> None:
-        """Hook executed after each host analysis cycle."""
-
-    def on_profile_initialized(self, user_id: str, state: UserState) -> None:
-        """Hook invoked when a new device profile is created."""
-
     @abstractmethod
     def analyze(
         self,
@@ -39,14 +27,18 @@ class RealtimeApplication(ABC):
         """Run application-specific analysis and return serialisable results."""
 
     # Provide empty defaults so subclasses only override what they need.
-    def on_registered(self) -> None:  # type: ignore[override]
-        pass
+    def on_registered(self) -> None:
+        """Hook invoked when the application is registered with the host."""
+        return None
 
-    def before_analysis_cycle(self) -> None:  # type: ignore[override]
-        pass
+    def before_analysis_cycle(self) -> None:
+        """Hook executed before each host analysis cycle."""
+        return None
 
-    def after_analysis_cycle(self) -> None:  # type: ignore[override]
-        pass
+    def after_analysis_cycle(self) -> None:
+        """Hook executed after each host analysis cycle."""
+        return None
 
-    def on_profile_initialized(self, user_id: str, state: UserState) -> None:  # type: ignore[override]
-        pass
+    def on_profile_initialized(self, user_id: str, state: UserState) -> None:
+        """Hook invoked when a new device profile is created."""
+        return None

@@ -216,6 +216,8 @@ class RealtimeApplicationHost:
                     "lsb_to_volts": lsb_to_volts,
                     "mne_info": mne_info,
                 }
+                if lsb_to_volts == 0:
+                    print(f"[Realtime] Warning: lsb_to_volts is zero for user {user_id}")
                 tracker = ChannelQualityTracker(header_info["ch_names"], header_info["ch_types"])
                 state = UserState(profile=profile, buffer=np.empty((0, len(header_info["ch_names"])), dtype=np.int16), tracker=tracker)
                 self._user_states[user_id] = state
@@ -223,6 +225,8 @@ class RealtimeApplicationHost:
                     self._analysis_results.pop(user_id, None)
                 for application in self._applications:
                     application.on_profile_initialized(user_id, state)
+
+            state = self._user_states[user_id]
 
             tracker = state.tracker
             tracker.update(signals, impedances)
