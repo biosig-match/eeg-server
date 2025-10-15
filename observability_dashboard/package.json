@@ -1,0 +1,19 @@
+{
+  "name": "observability_dashboard",
+  "version": "1.0.0",
+  "description": "Observability dashboard service for the EEG platform",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun --watch --env-file=../.env run src/main.ts"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.2.2",
+    "hono": "^4.4.11",
+    "minio": "^8.0.0",
+    "pg": "^8.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
