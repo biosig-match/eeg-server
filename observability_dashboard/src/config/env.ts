@@ -31,6 +31,9 @@ const envSchema = z.object({
   MINIO_BIDS_EXPORTS_BUCKET: z.string().default('bids-exports'),
   SERVICE_TIMEOUT_MS: z.coerce.number().default(2000),
   DASHBOARD_REFRESH_INTERVAL_MS: z.coerce.number().default(4000),
+  OBSERVABILITY_BASIC_USER: z.string(),
+  OBSERVABILITY_BASIC_PASSWORD: z.string(),
+  OBSERVABILITY_BASIC_REALM: z.string().default('Observability Dashboard'),
 })
 
 const parsedEnv = envSchema.safeParse({
@@ -59,10 +62,26 @@ const parsedEnv = envSchema.safeParse({
   MINIO_BIDS_EXPORTS_BUCKET: rawEnv.MINIO_BIDS_EXPORTS_BUCKET,
   SERVICE_TIMEOUT_MS: rawEnv.SERVICE_TIMEOUT_MS,
   DASHBOARD_REFRESH_INTERVAL_MS: rawEnv.DASHBOARD_REFRESH_INTERVAL_MS,
+  OBSERVABILITY_BASIC_USER: rawEnv.OBSERVABILITY_BASIC_USER,
+  OBSERVABILITY_BASIC_PASSWORD: rawEnv.OBSERVABILITY_BASIC_PASSWORD,
+  OBSERVABILITY_BASIC_REALM: rawEnv.OBSERVABILITY_BASIC_REALM,
 })
 
 if (!parsedEnv.success) {
-  console.error('❌ Invalid environment variables:', parsedEnv.error.flatten().fieldErrors)
+  const sensitiveFields = new Set([
+    'POSTGRES_PASSWORD',
+    'RABBITMQ_PASSWORD',
+    'MINIO_SECRET_KEY',
+    'OBSERVABILITY_BASIC_PASSWORD',
+  ])
+  const fieldErrors = parsedEnv.error.flatten().fieldErrors
+  const sanitizedErrors = Object.fromEntries(
+    Object.entries(fieldErrors).map(([key, messages]) => [
+      key,
+      sensitiveFields.has(key) ? ['[REDACTED]'] : messages,
+    ]),
+  )
+  console.error('❌ Invalid environment variables:', sanitizedErrors)
   throw new Error('Invalid environment variables.')
 }
 
@@ -71,3 +90,15 @@ export const config = parsedEnv.data
 export const DATABASE_URL = `postgres://${config.POSTGRES_USER}:${config.POSTGRES_PASSWORD}@${config.POSTGRES_HOST}:5432/${config.POSTGRES_DB}`
 
 export const RABBITMQ_MANAGEMENT_URL = `http://${config.RABBITMQ_HOST}:${config.RABBITMQ_MANAGEMENT_PORT}`
+
+export function getSafeConnectionString(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (parsed.password) {
+      parsed.password = '***'
+    }
+    return parsed.toString()
+  } catch {
+    return '[INVALID_URL]'
+  }
+}

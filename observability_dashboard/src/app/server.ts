@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from 'node:crypto'
+
 import { z } from 'zod'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
@@ -18,6 +20,12 @@ import { readRabbitStatus } from './services/rabbitmq'
 import { buildDashboardHtml } from './ui/dashboard'
 
 const app = new Hono()
+
+const BASIC_AUTH_SKIP_PATHS = new Set(['/health'])
+const expectedAuthorizationHeader = `Basic ${Buffer.from(
+  `${config.OBSERVABILITY_BASIC_USER}:${config.OBSERVABILITY_BASIC_PASSWORD}`,
+  'utf8',
+).toString('base64')}`
 
 function startRequestLog(method: string, path: string) {
   const startedAt = Date.now()
@@ -43,6 +51,28 @@ const limitQuerySchema = z.object({
     .refine((value) => value === undefined || (Number.isInteger(value) && value > 0 && value <= 500), {
       message: 'limit must be between 1 and 500',
     }),
+})
+
+function safeCompare(a: string, b: string) {
+  const aHash = createHash('sha256').update(a).digest()
+  const bHash = createHash('sha256').update(b).digest()
+  return timingSafeEqual(aHash, bHash)
+}
+
+app.use('*', async (c, next) => {
+  if (BASIC_AUTH_SKIP_PATHS.has(c.req.path)) {
+    await next()
+    return
+  }
+
+  const authorization = c.req.header('Authorization')
+  if (!authorization || !safeCompare(authorization, expectedAuthorizationHeader)) {
+    return c.text('Unauthorized', 401, {
+      'WWW-Authenticate': `Basic realm="${config.OBSERVABILITY_BASIC_REALM}", charset="UTF-8"`,
+    })
+  }
+
+  await next()
 })
 
 app.get('/health', async (c) => {

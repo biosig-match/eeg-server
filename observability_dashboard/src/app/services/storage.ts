@@ -38,7 +38,7 @@ export async function checkMinioHealth(maxObjectsPerBucket = 20): Promise<MinioH
     const previews: BucketPreview[] = []
     for (const bucket of buckets) {
       console.info(`[observability] Sampling up to ${maxObjectsPerBucket} objects from bucket ${bucket.name}`)
-      const objectSample = await listObjectsPreview(bucket.name, maxObjectsPerBucket)
+      const objectSample = await listObjectsPreviewWithRetry(bucket.name, maxObjectsPerBucket)
       previews.push({
         name: bucket.name,
         createdAt: bucket.creationDate?.toISOString(),
@@ -69,23 +69,42 @@ export async function listObjectsPreview(bucketName: string, limit: number): Pro
     const results: MinioObjectPreview[] = []
     const stream = minioClient.listObjectsV2(bucketName, '', false)
 
+    const TIMEOUT_MS = 5000
     let settled = false
+    let timeoutId: NodeJS.Timeout | undefined
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = undefined
+      }
+      stream.removeAllListeners()
+      if (!stream.destroyed) {
+        stream.destroy()
+      }
+    }
+
     const finalize = () => {
       if (settled) return
       settled = true
-      stream.removeAllListeners()
+      cleanup()
       resolve(results)
     }
     const fail = (err: unknown) => {
       if (settled) return
       settled = true
-      stream.removeAllListeners()
-      reject(err)
+      cleanup()
+      reject(err instanceof Error ? err : new Error(String(err)))
     }
 
+    timeoutId = setTimeout(() => {
+      fail(new Error(`Timeout while listing objects in bucket ${bucketName}`))
+    }, TIMEOUT_MS)
+
     stream.on('data', (obj) => {
+      if (settled) {
+        return
+      }
       if (results.length >= limit) {
-        stream.destroy()
         finalize()
         return
       }
@@ -103,4 +122,24 @@ export async function listObjectsPreview(bucketName: string, limit: number): Pro
       fail(err)
     })
   })
+}
+
+async function listObjectsPreviewWithRetry(bucketName: string, limit: number, maxRetries = 3): Promise<MinioObjectPreview[]> {
+  let lastError: Error | undefined
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await listObjectsPreview(bucketName, limit)
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      console.warn(
+        `[observability] Failed to list objects for bucket ${bucketName} (attempt ${attempt}/${maxRetries}): ${lastError.message}`,
+      )
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, Math.pow(2, attempt) * 100))
+      }
+    }
+  }
+
+  throw lastError ?? new Error(`Unable to list objects for bucket ${bucketName}`)
 }

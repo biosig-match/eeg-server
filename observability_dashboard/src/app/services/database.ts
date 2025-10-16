@@ -1,4 +1,5 @@
 import { Pool } from 'pg'
+import format from 'pg-format'
 
 import { DATABASE_URL } from '../../config/env'
 
@@ -105,22 +106,6 @@ export async function listUserTables(): Promise<TableSummary[]> {
   }
 }
 
-function assertSafeIdentifier(identifier: string) {
-  if (!/^[a-zA-Z0-9_]+$/.test(identifier)) {
-    throw new Error(`Illegal identifier: ${identifier}`)
-  }
-}
-
-function quoteIdentifier(identifier: string) {
-  return `"${identifier.replace(/"/g, '""')}"`
-}
-
-function qualifyTableName(schema: string, table: string) {
-  assertSafeIdentifier(schema)
-  assertSafeIdentifier(table)
-  return `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`
-}
-
 export async function describeTableColumns(schema: string, table: string): Promise<ColumnDescription[]> {
   const result = await pgPool.query(
     `
@@ -145,9 +130,9 @@ export async function describeTableColumns(schema: string, table: string): Promi
 }
 
 export async function readTableSample(schema: string, table: string, limit: number): Promise<TableSample> {
-  const qualified = qualifyTableName(schema, table)
-  console.info(`[observability] Sampling ${limit} rows from ${qualified}`)
-  const result = await pgPool.query(`SELECT * FROM ${qualified} LIMIT $1`, [limit])
+  const query = format('SELECT * FROM %I.%I LIMIT %L', schema, table, limit)
+  console.info(`[observability] Sampling ${limit} rows from ${schema}.${table}`)
+  const result = await pgPool.query(query)
   return {
     columns: result.fields.map((field) => field.name),
     rows: result.rows,

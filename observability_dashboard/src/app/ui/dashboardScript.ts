@@ -4,26 +4,56 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
       const SVG_NS = 'http://www.w3.org/2000/svg';
       const XLINK_NS = 'http://www.w3.org/1999/xlink';
       const KIND_ORDER = ['gateway', 'broker', 'database', 'service', 'queue', 'storage'];
-      const KIND_LAYOUT = {
-        gateway: { factor: 0.18, stretchX: 0.7, stretchY: 0.6 },
-        broker: { factor: 0.32, stretchX: 0.85, stretchY: 0.75 },
-        database: { factor: 0.48, stretchX: 0.95, stretchY: 0.9 },
-        service: { factor: 0.72, stretchX: 1.1, stretchY: 1 },
-        queue: { factor: 0.98, stretchX: 1.22, stretchY: 1.05 },
-        storage: { factor: 1.24, stretchX: 1.35, stretchY: 1.15 },
+      const KIND_LABELS = {
+        gateway: 'ゲートウェイ層',
+        broker: 'メッセージブローカー層',
+        database: 'データベース層',
+        service: 'アプリサービス層',
+        queue: 'キュー層',
+        storage: 'ストレージ層',
       };
-      const NODE_RADIUS = {
-        gateway: 28,
-        service: 28,
-        queue: 26,
-        broker: 28,
-        database: 32,
-        storage: 34,
+      const GRID_LAYOUT = {
+        columnGap: 1220,
+        rowGap: 420,
+        marginX: 420,
+        marginY: 220,
+        minWidth: 1920,
+        minHeight: 1040,
+        relaxPasses: 3,
+        maxColumnsPerRow: 5,
+        labelColumnWidth: 240,
       };
-      const MIN_RING_GAP = 90;
-      const GRAPH_MARGIN_X = 120;
-      const GRAPH_MARGIN_Y = 96;
-      const MAX_ARC_SPAN = Math.PI * 1.6;
+      const layoutRuntime = {
+        columnGap: GRID_LAYOUT.columnGap,
+        rowGap: GRID_LAYOUT.rowGap,
+        marginX: GRID_LAYOUT.marginX,
+        marginY: GRID_LAYOUT.marginY,
+        labelColumnWidth: GRID_LAYOUT.labelColumnWidth,
+        maxColumnsPerRow: GRID_LAYOUT.maxColumnsPerRow,
+      };
+      const NODE_DIMENSIONS = {
+        gateway: { width: 864, height: 360 },
+        broker: { width: 864, height: 360 },
+        database: { width: 884, height: 372 },
+        service: { width: 912, height: 380 },
+        queue: { width: 872, height: 364 },
+        storage: { width: 884, height: 372 },
+      };
+      const NODE_DEFAULT_DIMENSIONS = { width: 876, height: 368 };
+      const TITLE_TEXT_PADDING = 196;
+      const TITLE_AVG_CHAR_WIDTH = 15.8;
+      const SUBTITLE_LEFT_PADDING = 32;
+      const SUBTITLE_RIGHT_PADDING = 224;
+      const SUBTITLE_AVG_CHAR_WIDTH = 30.5;
+      const SUBTITLE_VERTICAL_PADDING = 64;
+      const EDGE_START_OUTSET = 0;
+      const EDGE_END_PADDING = 0;
+      const LANE_SPACING = 52;
+      const LANE_LIMIT_MARGIN = 72;
+      const EDGE_CLEARANCE = 128;
+      const TURN_MIN_DISTANCE = 96;
+      const WALKWAY_EXTENSION_SLOTS = 1;
+      const ALIGN_TOLERANCE = 4;
 
       const state = {
         snapshot: null,
@@ -134,8 +164,8 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
         tooltip.style.top = String(event.pageY + offset) + 'px';
       }
 
-      function nodeRadius(kind) {
-        return NODE_RADIUS[kind] ?? 28;
+      function nodeDimensions(kind) {
+        return NODE_DIMENSIONS[kind] ?? NODE_DEFAULT_DIMENSIONS;
       }
 
       function clearGraph() {
@@ -172,14 +202,33 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
           return showGraphError('表示するノードがありません');
         }
 
-        const width = graphShell.clientWidth || 1200;
-        const height = graphShell.clientHeight || Math.max(Math.floor(width / 3), 420);
+        const shellWidth = graphShell.clientWidth || GRID_LAYOUT.minWidth;
+        const shellHeight = graphShell.clientHeight || GRID_LAYOUT.minHeight;
+        const layout = computeGridLayout(snapshot.nodes, snapshot.edges ?? [], shellWidth, shellHeight);
+        const {
+          positions,
+          width,
+          height,
+          rowKinds,
+          columnSlots,
+          columnSpan,
+          minColumn,
+          maxColumn,
+          maxRow,
+          columnBaseX,
+        } = layout;
+
         graphSvg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
         graphSvg.setAttribute('width', String(width));
         graphSvg.setAttribute('height', String(height));
         if (graphSvg instanceof SVGSVGElement && !graphSvg.hasAttribute('xmlns:xlink')) {
           graphSvg.setAttribute('xmlns:xlink', XLINK_NS);
         }
+        const scaleX = shellWidth / width;
+        const scaleY = shellHeight / height;
+        const displayScale = Math.min(scaleX, scaleY, 1);
+        const typeScale = displayScale < 1 ? Math.min(1.2, 1 / Math.max(displayScale, 0.82)) : 1;
+        graphSvg.style.setProperty('--type-scale', typeScale.toFixed(3));
         clearGraph();
 
         const defs = document.createElementNS(SVG_NS, 'defs');
@@ -196,70 +245,78 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
         markerPath.setAttribute('fill', 'rgba(148,163,184,0.55)');
         marker.appendChild(markerPath);
         defs.appendChild(marker);
+        const gradient = document.createElementNS(SVG_NS, 'linearGradient');
+        gradient.setAttribute('id', 'graph-surface-gradient');
+        gradient.setAttribute('x1', '0%');
+        gradient.setAttribute('y1', '0%');
+        gradient.setAttribute('x2', '100%');
+        gradient.setAttribute('y2', '100%');
+        const gStop1 = document.createElementNS(SVG_NS, 'stop');
+        gStop1.setAttribute('offset', '0%');
+        gStop1.setAttribute('stop-color', 'rgba(30, 41, 59, 0.88)');
+        const gStop2 = document.createElementNS(SVG_NS, 'stop');
+        gStop2.setAttribute('offset', '55%');
+        gStop2.setAttribute('stop-color', 'rgba(15, 23, 42, 0.65)');
+        const gStop3 = document.createElementNS(SVG_NS, 'stop');
+        gStop3.setAttribute('offset', '100%');
+        gStop3.setAttribute('stop-color', 'rgba(2, 6, 23, 0.75)');
+        gradient.appendChild(gStop1);
+        gradient.appendChild(gStop2);
+        gradient.appendChild(gStop3);
+        defs.appendChild(gradient);
         graphSvg.appendChild(defs);
 
-        const grouped = new Map();
-        for (const node of snapshot.nodes) {
-          if (!grouped.has(node.kind)) grouped.set(node.kind, []);
-          grouped.get(node.kind).push(node);
+        const backgroundGroup = document.createElementNS(SVG_NS, 'g');
+        backgroundGroup.setAttribute('class', 'graph-backdrop');
+        graphSvg.appendChild(backgroundGroup);
+
+        const surface = document.createElementNS(SVG_NS, 'rect');
+        surface.setAttribute('x', '0');
+        surface.setAttribute('y', '0');
+        surface.setAttribute('width', String(width));
+        surface.setAttribute('height', String(height));
+        surface.setAttribute('class', 'graph-surface');
+        surface.setAttribute('fill', 'url(#graph-surface-gradient)');
+        backgroundGroup.appendChild(surface);
+
+        const gridGroup = document.createElementNS(SVG_NS, 'g');
+        gridGroup.setAttribute('class', 'graph-grid');
+        backgroundGroup.appendChild(gridGroup);
+
+        for (let slotIndex = 0; slotIndex < columnSlots; slotIndex++) {
+          const x = columnBaseX + slotIndex * (layoutRuntime.columnGap / 2);
+          const line = document.createElementNS(SVG_NS, 'line');
+          line.setAttribute('x1', String(x));
+          line.setAttribute('x2', String(x));
+          line.setAttribute('y1', String(layoutRuntime.marginY - 56));
+          line.setAttribute('y2', String(height - layoutRuntime.marginY + 56));
+          line.setAttribute('class', 'grid-line vertical');
+          gridGroup.appendChild(line);
         }
 
-        const positions = new Map();
-        const centerX = width / 2;
-        const centerY = height / 2;
-        const baseRadiusX = Math.max(width / 2 - GRAPH_MARGIN_X, 280);
-        const baseRadiusY = Math.max(height / 2 - GRAPH_MARGIN_Y, 180);
+        const rowUsage = new Map();
+        rowKinds.forEach(({ kind, position }) => {
+          const y = layoutRuntime.marginY + position * (layoutRuntime.rowGap / 2);
+          const line = document.createElementNS(SVG_NS, 'line');
+          line.setAttribute('x1', String(layoutRuntime.marginX - 72));
+          line.setAttribute('x2', String(width - layoutRuntime.marginX + 72));
+          line.setAttribute('y1', String(y));
+          line.setAttribute('y2', String(y));
+          line.setAttribute('class', 'grid-line horizontal');
+          gridGroup.appendChild(line);
 
-        for (const kind of KIND_ORDER) {
-          const nodesOfKind = grouped.get(kind) ?? [];
-          if (nodesOfKind.length === 0) continue;
-          const layout = KIND_LAYOUT[kind] ?? { factor: 0.82, stretchX: 1, stretchY: 1 };
-          const nodeSize = nodeRadius(kind);
-          let radiusX = Math.max(baseRadiusX * (layout.factor ?? 0.8) * (layout.stretchX ?? 1), nodeSize + MIN_RING_GAP);
-          let radiusY = Math.max(
-            baseRadiusY * (layout.factor ?? 0.8) * (layout.stretchY ?? 1),
-            nodeSize + MIN_RING_GAP * 0.6,
-          );
-          radiusX = Math.min(radiusX, width / 2 - nodeSize - GRAPH_MARGIN_X / 3);
-          radiusY = Math.min(radiusY, height / 2 - nodeSize - GRAPH_MARGIN_Y / 3);
-          if (radiusY < nodeSize + 36) radiusY = nodeSize + 36;
-          const approxCircumference = Math.PI * (radiusX + radiusY);
-          const requiredPerNode = nodeSize * 2 + MIN_RING_GAP * 0.6;
-          if (approxCircumference < requiredPerNode * nodesOfKind.length) {
-            const scale = (requiredPerNode * nodesOfKind.length) / Math.max(approxCircumference, 1);
-            radiusX = Math.min(radiusX * scale * 0.75, width / 2 - nodeSize - GRAPH_MARGIN_X / 4);
-            radiusY = Math.min(radiusY * scale * 0.75, height / 2 - nodeSize - GRAPH_MARGIN_Y / 4);
-          }
-          const span =
-            nodesOfKind.length > 1
-              ? Math.min(MAX_ARC_SPAN, Math.max(Math.PI * 0.9, (nodesOfKind.length - 1) * (Math.PI / 4.8)))
-              : 0;
-          const startAngle = -Math.PI / 2 - span / 2;
-          const sorted = nodesOfKind.slice().sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-          sorted.forEach((node, index) => {
-            const angle =
-              nodesOfKind.length > 1 ? startAngle + (span * index) / (nodesOfKind.length - 1) : -Math.PI / 2;
-            const jitter =
-              sorted.length > 3 ? ((index % 2 === 0 ? 1 : -1) * Math.PI) / Math.max(sorted.length * 22, 120) : 0;
-            const x = centerX + radiusX * Math.cos(angle + jitter);
-            const y = centerY + radiusY * Math.sin(angle + jitter * 0.5);
-            positions.set(node.id, { x, y });
-          });
-        }
+          const usage = (rowUsage.get(kind) ?? 0) + 1;
+          rowUsage.set(kind, usage);
+          const labelText = (KIND_LABELS[kind] ?? kind) + (usage > 1 ? ' #' + usage : '');
 
-        const fallbackNodes = snapshot.nodes.filter((node) => !positions.has(node.id));
-        if (fallbackNodes.length > 0) {
-          const radiusX = Math.min(width / 2 - GRAPH_MARGIN_X / 2, baseRadiusX * 1.32);
-          const radiusY = Math.min(height / 2 - GRAPH_MARGIN_Y / 2, baseRadiusY * 1.22);
-          const span = Math.min(MAX_ARC_SPAN, Math.PI * 1.5);
-          const startAngle = -Math.PI / 2 - span / 2;
-          fallbackNodes.forEach((node, index) => {
-            const angle = fallbackNodes.length > 1 ? startAngle + (span * index) / (fallbackNodes.length - 1) : -Math.PI / 2;
-            const x = centerX + radiusX * Math.cos(angle);
-            const y = centerY + radiusY * Math.sin(angle);
-            positions.set(node.id, { x, y });
-          });
-        }
+          const label = document.createElementNS(SVG_NS, 'text');
+          label.setAttribute('x', String(layoutRuntime.marginX + layoutRuntime.labelColumnWidth / 2));
+          label.setAttribute('y', String(y + 5));
+          label.setAttribute('text-anchor', 'middle');
+          label.setAttribute('class', 'row-label kind-' + kind);
+          label.textContent = labelText;
+          gridGroup.appendChild(label);
+        });
 
         const nodeMap = new Map(snapshot.nodes.map((node) => [node.id, node]));
 
@@ -271,6 +328,7 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
         graphSvg.appendChild(pulsesGroup);
 
         const edges = snapshot.edges ?? [];
+        const routing = computeEdgeRouting(edges, positions, minColumn, maxColumn);
         const flowStats = edges.reduce(
           (acc, edge) => {
             const metrics = edge.metrics ?? {};
@@ -292,57 +350,42 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
           const toPos = positions.get(edge.to);
           const fromNode = nodeMap.get(edge.from);
           const toNode = nodeMap.get(edge.to);
-          if (!fromPos || !toPos || !fromNode || !toNode) continue;
-          const dx = toPos.x - fromPos.x;
-          const dy = toPos.y - fromPos.y;
-          const distance = Math.hypot(dx, dy) || 1;
-          const startOffset = nodeRadius(fromNode.kind) + 6;
-          const endOffset = nodeRadius(toNode.kind) + 12;
-          const startX = fromPos.x + (dx / distance) * startOffset;
-          const startY = fromPos.y + (dy / distance) * startOffset;
-          const endX = toPos.x - (dx / distance) * endOffset;
-          const endY = toPos.y - (dy / distance) * endOffset;
+          const route = routing.get(edge.id);
+          if (!fromPos || !toPos || !fromNode || !toNode || !route) continue;
+          const startPoint = projectRectBoundary(
+            fromPos,
+            route.startDirection,
+            route.startOffset,
+            EDGE_START_OUTSET,
+          );
+          const endPoint = projectRectBoundary(
+            toPos,
+            route.endDirection,
+            route.endOffset,
+            EDGE_END_PADDING,
+          );
+          const pathId = 'edge-path-' + edge.id;
           const path = document.createElementNS(SVG_NS, 'path');
-          const curvature = 0.22;
-          const controlX = (startX + endX) / 2 - dy * curvature;
-          const controlY = (startY + endY) / 2 + dx * curvature;
-          path.setAttribute('d', ['M', startX, startY, 'Q', controlX, controlY, endX, endY].join(' '));
-          path.setAttribute('class', 'flow-path kind-' + edge.kind);
-          const metrics = edge.metrics ?? {};
-          const rate = Math.max(metrics.publishRate ?? 0, metrics.deliverRate ?? 0);
-          const backlog = Math.max(metrics.messagesReady ?? 0, metrics.messages ?? 0);
-          const intensity = rate > 0 ? rate : backlog / Math.max(maxBacklog / 4, 25);
-          const baseWidth = 1.8 + Math.min(intensity, 6) * 0.6;
-          path.style.setProperty('--base-width', baseWidth.toFixed(2));
-          path.style.strokeWidth = baseWidth.toFixed(2);
-          const speed = intensity > 0 ? Math.max(0.8, 6 / Math.min(intensity, 8)) : 4;
-          path.style.setProperty('--flow-speed', speed.toFixed(2) + 's');
-          const pathId = 'edge-' + edge.id;
+          const pathData = buildRoutedPath(startPoint, endPoint, route, fromPos, toPos, minColumn, maxColumn, maxRow);
+          path.setAttribute('d', pathData);
           path.setAttribute('id', pathId);
+          path.setAttribute('class', 'flow-path kind-' + edge.kind);
           path.dataset.edgeId = edge.id;
           path.dataset.from = edge.from;
           path.dataset.to = edge.to;
-          if (intensity > 0.05) {
+
+          const metrics = edge.metrics ?? {};
+          const rate = Math.max(metrics.publishRate ?? 0, metrics.deliverRate ?? 0);
+          const backlog = Math.max(metrics.messagesReady ?? 0, metrics.messages ?? 0);
+          const intensity = rate > 0 ? rate / maxRate : backlog / Math.max(maxBacklog, 1);
+          if (intensity > 0.08) {
             path.classList.add('has-traffic');
             activeEdges += 1;
           }
-          edgeGroup.appendChild(path);
-
-          if (intensity > 0.05) {
-            const pulse = document.createElementNS(SVG_NS, 'circle');
-            pulse.setAttribute('r', '4');
-            pulse.setAttribute('class', 'flow-pulse kind-' + edge.kind);
-            pulse.dataset.edgeId = edge.id;
-            const motion = document.createElementNS(SVG_NS, 'animateMotion');
-            motion.setAttribute('dur', Math.max(0.6, speed * 0.75).toFixed(2) + 's');
-            motion.setAttribute('repeatCount', 'indefinite');
-            const mpath = document.createElementNS(SVG_NS, 'mpath');
-            mpath.setAttributeNS(XLINK_NS, 'href', '#' + pathId);
-            motion.appendChild(mpath);
-            pulse.appendChild(motion);
-            pulsesGroup.appendChild(pulse);
-            state.graphElements.pulses.set(edge.id, pulse);
-          }
+          const baseWidth = 2 + Math.min(2.5, intensity * 2.5);
+          path.style.setProperty('--base-width', baseWidth.toFixed(2));
+          const speed = Math.max(0.9, 3.6 - intensity * 2.8);
+          path.style.setProperty('--flow-speed', speed.toFixed(2) + 's');
 
           path.addEventListener('mouseenter', (event) => {
             const info = edge.metrics ?? {};
@@ -361,7 +404,25 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
             hideTooltip();
             applySelectionHighlight();
           });
+
+          edgeGroup.appendChild(path);
           state.graphElements.edges.set(edge.id, path);
+
+          if (intensity > 0.08) {
+            const pulse = document.createElementNS(SVG_NS, 'circle');
+            pulse.setAttribute('r', '4');
+            pulse.setAttribute('class', 'flow-pulse kind-' + edge.kind);
+            pulse.dataset.edgeId = edge.id;
+            const motion = document.createElementNS(SVG_NS, 'animateMotion');
+            motion.setAttribute('dur', Math.max(0.6, speed * 0.75).toFixed(2) + 's');
+            motion.setAttribute('repeatCount', 'indefinite');
+            const mpath = document.createElementNS(SVG_NS, 'mpath');
+            mpath.setAttributeNS(XLINK_NS, 'href', '#' + pathId);
+            motion.appendChild(mpath);
+            pulse.appendChild(motion);
+            pulsesGroup.appendChild(pulse);
+            state.graphElements.pulses.set(edge.id, pulse);
+          }
         }
 
         const nodeGroup = document.createElementNS(SVG_NS, 'g');
@@ -375,21 +436,58 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
           group.setAttribute('class', 'node-group');
           group.dataset.nodeId = node.id;
           group.dataset.kind = node.kind;
-          group.style.setProperty('--node-radius', String(nodeRadius(node.kind)));
+          group.style.setProperty('--node-width', String(pos.width));
+          group.style.setProperty('--node-height', String(pos.height));
 
-          const circle = document.createElementNS(SVG_NS, 'circle');
-          circle.setAttribute('cx', String(pos.x));
-          circle.setAttribute('cy', String(pos.y));
-          circle.setAttribute('r', String(nodeRadius(node.kind)));
-          circle.setAttribute('class', 'node-circle ' + statusClass(node.status?.level) + ' kind-' + node.kind);
-          group.appendChild(circle);
+          const card = document.createElementNS(SVG_NS, 'rect');
+          card.setAttribute('x', String(pos.x - pos.width / 2));
+          card.setAttribute('y', String(pos.y - pos.height / 2));
+          card.setAttribute('width', String(pos.width));
+          card.setAttribute('height', String(pos.height));
+          card.setAttribute('rx', '18');
+          card.setAttribute('ry', '18');
+          card.setAttribute('class', 'node-card ' + statusClass(node.status?.level) + ' kind-' + node.kind);
+          group.appendChild(card);
 
-          const label = document.createElementNS(SVG_NS, 'text');
-          label.setAttribute('x', String(pos.x));
-          label.setAttribute('y', String(pos.y + nodeRadius(node.kind) + 16));
-          label.setAttribute('class', 'node-label');
-          label.textContent = node.label;
-          group.appendChild(label);
+          const title = document.createElementNS(SVG_NS, 'text');
+          title.setAttribute('x', String(pos.x));
+          const titleBaseY = pos.y - pos.height / 2 + 56;
+          title.setAttribute('y', String(titleBaseY));
+          title.setAttribute('class', 'node-title');
+          const rawTitleLines = wrapText(node.label ?? '', titleCapacityFromWidth(pos.width));
+          const titleLines = rawTitleLines.filter((line) => line.trim().length > 0);
+          if (titleLines.length === 0) {
+            titleLines.push(node.label ?? '');
+          }
+          titleLines.forEach((line, lineIndex) => {
+            const tspan = document.createElementNS(SVG_NS, 'tspan');
+            tspan.setAttribute('x', String(pos.x));
+            tspan.setAttribute('dy', lineIndex === 0 ? '0' : '1.18em');
+            tspan.textContent = line;
+            title.appendChild(tspan);
+          });
+          group.appendChild(title);
+
+        const subtitleText = node.description ?? '';
+        if (subtitleText) {
+          const subtitle = document.createElementNS(SVG_NS, 'text');
+          const subtitleX = pos.x - pos.width / 2 + SUBTITLE_LEFT_PADDING;
+          subtitle.setAttribute('x', String(subtitleX));
+          const subtitleBaseY =
+            titleBaseY + Math.max(titleLines.length, 1) * 28 + SUBTITLE_VERTICAL_PADDING;
+          subtitle.setAttribute('y', String(subtitleBaseY));
+          subtitle.setAttribute('class', 'node-subtitle');
+          const lines = wrapText(subtitleText, subtitleCapacityFromWidth(pos.width));
+          lines.forEach((line, lineIndex) => {
+            const tspan = document.createElementNS(SVG_NS, 'tspan');
+            tspan.setAttribute('x', String(subtitleX));
+            tspan.setAttribute('dy', lineIndex === 0 ? '0' : '1.32em');
+            tspan.textContent = line;
+            subtitle.appendChild(tspan);
+          });
+          subtitle.setAttribute('text-anchor', 'start');
+          group.appendChild(subtitle);
+        }
 
           group.addEventListener('mouseenter', (event) => {
             const statusDetail = node.status?.detail ? '<br />詳細: ' + node.status.detail : '';
@@ -404,7 +502,7 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
               '<strong>' +
                 node.label +
                 '</strong><br />' +
-                node.description +
+                (node.description ?? '—') +
                 '<br />ステータス: ' +
                 statusLabel(node.status?.level ?? 'unknown') +
                 statusDetail +
@@ -423,16 +521,554 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
           nodeGroup.appendChild(group);
           state.graphElements.nodes.set(node.id, group);
         }
-        applySelectionHighlight();
+
+        setGraphMeta('グリッド: ' + rowKinds.length + '行×' + columnSpan + '列');
         graphSummary.textContent =
           snapshot.nodes.length +
           ' ノード / ' +
           (snapshot.edges?.length ?? 0) +
           ' エッジ (アクティブ: ' +
           activeEdges +
-          ')';
-      }
+          ') — グリッド ' +
+          rowKinds.length +
+          '行×' +
+          columnSpan +
+          '列';
+        applySelectionHighlight();
 
+        function computeGridLayout(nodes, edges, shellWidth, shellHeight) {
+          layoutRuntime.columnGap = GRID_LAYOUT.columnGap;
+          layoutRuntime.rowGap = GRID_LAYOUT.rowGap;
+          layoutRuntime.marginX = GRID_LAYOUT.marginX;
+          layoutRuntime.marginY = GRID_LAYOUT.marginY;
+          layoutRuntime.labelColumnWidth = GRID_LAYOUT.labelColumnWidth;
+          layoutRuntime.maxColumnsPerRow = GRID_LAYOUT.maxColumnsPerRow;
+
+          const adjacency = buildAdjacency(nodes, edges);
+          const buckets = new Map();
+          for (const node of nodes) {
+            if (!buckets.has(node.kind)) buckets.set(node.kind, []);
+            buckets.get(node.kind).push(node);
+          }
+
+          let orderedKinds = [];
+          for (const kind of KIND_ORDER) {
+            if (buckets.has(kind) && buckets.get(kind).length > 0) orderedKinds.push(kind);
+          }
+          for (const [kind, list] of buckets.entries()) {
+            if (!orderedKinds.includes(kind) && list.length > 0) {
+              orderedKinds.push(kind);
+            }
+          }
+
+          const orderMap = new Map();
+          for (const kind of orderedKinds) {
+            const bucket = (buckets.get(kind) ?? []).slice().sort((a, b) => a.label.localeCompare(b.label, 'ja'));
+            orderMap.set(kind, bucket);
+          }
+
+          let previousColumns = new Map();
+          let finalColumns = new Map();
+          for (let pass = 0; pass < GRID_LAYOUT.relaxPasses; pass++) {
+            finalColumns = new Map();
+            for (const kind of orderedKinds) {
+              const list = orderMap.get(kind) ?? [];
+              if (list.length === 0) continue;
+              const rowUsed = new Set();
+              const scored = list.map((node, index) => {
+                const neighbors = adjacency.get(node.id) ?? new Set();
+                const neighborColumns = [];
+                neighbors.forEach((neighborId) => {
+                  if (finalColumns.has(neighborId)) neighborColumns.push(finalColumns.get(neighborId));
+                  else if (previousColumns.has(neighborId)) neighborColumns.push(previousColumns.get(neighborId));
+                });
+                const avg = neighborColumns.length > 0
+                    ? neighborColumns.reduce((sum, value) => sum + value, 0) / neighborColumns.length
+                    : previousColumns.has(node.id)
+                      ? previousColumns.get(node.id)
+                      : index;
+                return { node, avg, index };
+              });
+              scored.sort((a, b) => {
+                if (Number.isFinite(a.avg) && Number.isFinite(b.avg) && a.avg !== b.avg) {
+                  return a.avg - b.avg;
+                }
+                return a.index - b.index;
+              });
+              const ordered = [];
+              scored.forEach((entry) => {
+                let desired = entry.avg;
+                if (!Number.isFinite(desired)) desired = entry.index;
+                let column = Math.round(desired);
+                if (!Number.isFinite(column)) column = entry.index;
+                let offset = 0;
+                while (rowUsed.has(column)) {
+                  offset += 1;
+                  const direction = offset % 2 === 0 ? -1 : 1;
+                  column = Math.round(desired) + direction * Math.ceil(offset / 2);
+                  if (!Number.isFinite(column)) {
+                    column = entry.index + offset;
+                  }
+                }
+                rowUsed.add(column);
+                finalColumns.set(entry.node.id, column);
+                ordered.push(entry.node);
+              });
+              orderMap.set(kind, ordered);
+            }
+            previousColumns = finalColumns;
+          }
+
+          for (const kind of orderedKinds) {
+            const list = orderMap.get(kind) ?? [];
+            list.forEach((node, index) => {
+              if (!finalColumns.has(node.id)) {
+                finalColumns.set(node.id, index);
+              }
+            });
+          }
+
+          if (layoutRuntime.maxColumnsPerRow > 0) {
+            const aspectRatio = shellWidth > 0 && shellHeight > 0 ? shellWidth / shellHeight : 1;
+            const aspectLimit =
+              aspectRatio < 1
+                ? Math.max(1, Math.round(GRID_LAYOUT.maxColumnsPerRow * Math.max(aspectRatio, 0.38)))
+                : GRID_LAYOUT.maxColumnsPerRow;
+            layoutRuntime.maxColumnsPerRow = Math.max(1, Math.min(GRID_LAYOUT.maxColumnsPerRow, aspectLimit));
+
+            const expandedKinds = [];
+            for (const kind of orderedKinds) {
+              const list = (orderMap.get(kind) ?? []).slice();
+              list.sort((a, b) => {
+                const colA = finalColumns.get(a.id) ?? 0;
+                const colB = finalColumns.get(b.id) ?? 0;
+                return colA - colB;
+              });
+              if (list.length <= layoutRuntime.maxColumnsPerRow) {
+                list.forEach((node, index) => {
+                  finalColumns.set(node.id, index);
+                });
+                orderMap.set(kind, list);
+                expandedKinds.push(kind);
+                continue;
+              }
+              for (let index = 0; index < list.length; index += layoutRuntime.maxColumnsPerRow) {
+                const slice = list.slice(index, index + layoutRuntime.maxColumnsPerRow);
+                const overflowIndex = Math.floor(index / layoutRuntime.maxColumnsPerRow);
+                const key = overflowIndex === 0 ? kind : kind + '-overflow-' + overflowIndex;
+                slice.forEach((node, sliceIndex) => {
+                  finalColumns.set(node.id, sliceIndex);
+                });
+                orderMap.set(key, slice);
+                expandedKinds.push(key);
+              }
+            }
+            orderedKinds = expandedKinds;
+          }
+
+          const scaledColumns = new Map();
+          let minColumn = Infinity;
+          let maxColumn = -Infinity;
+          finalColumns.forEach((value, key) => {
+            const scaled = Number.isFinite(value) ? value * 2 : 0;
+            scaledColumns.set(key, scaled);
+            if (scaled < minColumn) minColumn = scaled;
+            if (scaled > maxColumn) maxColumn = scaled;
+          });
+          if (!Number.isFinite(minColumn) || !Number.isFinite(maxColumn)) {
+            minColumn = 0;
+            maxColumn = 0;
+          }
+          finalColumns = scaledColumns;
+
+          const columnSlots = maxColumn - minColumn + 1;
+          const columnBaseX = layoutRuntime.marginX + layoutRuntime.labelColumnWidth + layoutRuntime.columnGap;
+          const positions = new Map();
+          const rowLabels = [];
+          let maxRowIndex = 0;
+          orderedKinds.forEach((originalKind, rowIndex) => {
+            const baseKind = originalKind.split('-overflow-')[0];
+            const rowPosition = rowIndex * 2;
+            maxRowIndex = Math.max(maxRowIndex, rowPosition);
+            rowLabels.push({ kind: baseKind, position: rowPosition });
+            const list = orderMap.get(originalKind) ?? orderMap.get(baseKind) ?? [];
+            list.sort((a, b) => {
+              const colA = finalColumns.get(a.id) ?? 0;
+              const colB = finalColumns.get(b.id) ?? 0;
+              return colA - colB;
+            });
+            list.forEach((node) => {
+              const column = finalColumns.get(node.id) ?? 0;
+              const x = columnBaseX + (column - minColumn) * (layoutRuntime.columnGap / 2);
+              const y = layoutRuntime.marginY + rowPosition * (layoutRuntime.rowGap / 2);
+              const size = nodeDimensions(node.kind);
+              positions.set(node.id, {
+                x,
+                y,
+                width: size.width,
+                height: size.height,
+                column,
+                row: rowPosition,
+                kind: node.kind,
+              });
+            });
+          });
+
+          const effectiveColumns = Math.max(1, Math.floor(columnSlots / 2) + 1);
+          const totalRowSlots = maxRowIndex + 1;
+
+          const slotSpan = Math.max(totalRowSlots - 1 + WALKWAY_EXTENSION_SLOTS * 2, 0);
+          const targetHeight = Math.max(shellHeight, GRID_LAYOUT.minHeight);
+          const availableForGaps = targetHeight - layoutRuntime.marginY * 2 - NODE_DEFAULT_DIMENSIONS.height;
+          if (slotSpan > 0 && availableForGaps > 0) {
+            const candidateRowGap = (availableForGaps / slotSpan) * 2;
+            if (candidateRowGap > layoutRuntime.rowGap + ALIGN_TOLERANCE) {
+              layoutRuntime.rowGap = candidateRowGap;
+            }
+          }
+
+          positions.forEach((pos) => {
+            pos.y = layoutRuntime.marginY + pos.row * (layoutRuntime.rowGap / 2);
+          });
+
+          const width = Math.max(
+            shellWidth,
+            layoutRuntime.marginX * 2 +
+              layoutRuntime.labelColumnWidth +
+              layoutRuntime.columnGap / 2 +
+              Math.max(columnSlots - 1 + WALKWAY_EXTENSION_SLOTS * 2, 0) * (layoutRuntime.columnGap / 2) +
+              NODE_DEFAULT_DIMENSIONS.width,
+          );
+          const height = Math.max(
+            shellHeight,
+            layoutRuntime.marginY * 2 +
+              Math.max(totalRowSlots - 1 + WALKWAY_EXTENSION_SLOTS * 2, 0) * (layoutRuntime.rowGap / 2) +
+              NODE_DEFAULT_DIMENSIONS.height,
+          );
+
+          const maxRow = maxRowIndex;
+            return {
+              positions,
+              width,
+              height,
+              rowKinds: rowLabels,
+              columnSlots,
+              columnSpan: effectiveColumns,
+              minColumn,
+              maxColumn,
+              maxRow,
+              columnBaseX,
+            };
+        }
+
+        function buildAdjacency(nodes, edges) {
+          const adjacency = new Map();
+          nodes.forEach((node) => adjacency.set(node.id, new Set()));
+          edges.forEach((edge) => {
+            if (!adjacency.has(edge.from)) adjacency.set(edge.from, new Set());
+            if (!adjacency.has(edge.to)) adjacency.set(edge.to, new Set());
+            adjacency.get(edge.from).add(edge.to);
+            adjacency.get(edge.to).add(edge.from);
+          });
+          return adjacency;
+        }
+
+        function projectRectBoundary(node, direction, offset = 0, padding = 0) {
+          const halfWidth = node.width / 2;
+          const halfHeight = node.height / 2;
+          if (direction === 'left' || direction === 'right') {
+            const sign = direction === 'right' ? 1 : -1;
+            const limit = Math.max(4, halfHeight - LANE_LIMIT_MARGIN);
+            const clampedOffset = clamp(offset, -limit, limit);
+            return {
+              x: node.x + sign * (halfWidth + padding),
+              y: node.y + clampedOffset,
+            };
+          }
+          const sign = direction === 'down' ? 1 : -1;
+          const limit = Math.max(6, halfWidth - LANE_LIMIT_MARGIN);
+          const clampedOffset = clamp(offset, -limit, limit);
+          return {
+            x: node.x + clampedOffset,
+            y: node.y + sign * (halfHeight + padding),
+          };
+        }
+
+        function buildRoutedPath(start, end, route, sourceNode, targetNode, minColumn, maxColumn, maxRow) {
+          const points = [start];
+          const { fromColumn, fromRow, toColumn, toRow, startDirection, endDirection } = route;
+        
+          const isVerticalTravel = fromColumn === toColumn && fromRow !== toRow;
+          const isHorizontalTravel = fromRow === toRow && fromColumn !== toColumn;
+        
+          // Condition for a simple U-shaped path for nodes in the same column.
+          // This applies only when exiting and entering from the same side (e.g., left-to-left).
+          const simpleVerticalPath = isVerticalTravel && 
+                                     startDirection === endDirection &&
+                                     (startDirection === 'left' || startDirection === 'right');
+        
+          // Condition for a simple U-shaped path for nodes in the same row.
+          // This applies only when exiting and entering from the same side (e.g., top-to-top).
+          const simpleHorizontalPath = isHorizontalTravel &&
+                                       startDirection === endDirection &&
+                                       (startDirection === 'up' || startDirection === 'down');
+        
+          if (simpleVerticalPath) {
+            // For simple side-to-side connections in the same column, create a U-bend.
+            const goRight = fromColumn < (minColumn + maxColumn) / 2;
+            const walkwayX = columnWalkway(fromColumn, goRight ? 'right' : 'left', minColumn, maxColumn);
+            points.push({ x: walkwayX, y: start.y });
+            points.push({ x: walkwayX, y: end.y });
+          } else if (simpleHorizontalPath) {
+            // For simple top-to-bottom connections in the same row, create a U-bend.
+            const goDown = fromRow < maxRow / 2;
+            const walkwayY = rowWalkway(fromRow, goDown ? 'down' : 'up', maxRow);
+            points.push({ x: start.x, y: walkwayY });
+            points.push({ x: end.x, y: walkwayY });
+          } else if (fromColumn !== toColumn || fromRow !== toRow) {
+            // This block now handles diagonal connections AND complex same-row/same-column connections.
+            const startsHorizontal = startDirection === 'left' || startDirection === 'right';
+            const endsHorizontal = endDirection === 'left' || endDirection === 'right';
+        
+            // Determine routing direction. Use a heuristic for same-column/row cases.
+            const goRight = toColumn > fromColumn ? true : (toColumn < fromColumn ? false : fromColumn < (minColumn + maxColumn) / 2);
+            const goDown = toRow > fromRow ? true : (toRow < fromRow ? false : fromRow < maxRow / 2);
+             
+            const vWalkwayStart = columnWalkway(fromColumn, goRight ? 'right' : 'left', minColumn, maxColumn);
+            const hWalkwayStart = rowWalkway(fromRow, goDown ? 'down' : 'up', maxRow);
+            const vWalkwayEnd = columnWalkway(toColumn, goRight ? 'left' : 'right', minColumn, maxColumn);
+            const hWalkwayEnd = rowWalkway(toRow, goDown ? 'up' : 'down', maxRow);
+            
+            if (startsHorizontal) {
+              points.push({ x: vWalkwayStart, y: start.y });
+              if (endsHorizontal) { // H -> H
+                points.push({ x: vWalkwayStart, y: hWalkwayStart });
+                points.push({ x: vWalkwayEnd, y: hWalkwayStart });
+                points.push({ x: vWalkwayEnd, y: end.y });
+              } else { // H -> V
+                points.push({ x: vWalkwayStart, y: hWalkwayEnd });
+                points.push({ x: end.x, y: hWalkwayEnd });
+              }
+            } else { // startsVertical
+              points.push({ x: start.x, y: hWalkwayStart });
+              if (endsHorizontal) { // V -> H
+                points.push({ x: vWalkwayEnd, y: hWalkwayStart });
+                points.push({ x: vWalkwayEnd, y: end.y });
+              } else { // V -> V
+                points.push({ x: vWalkwayStart, y: hWalkwayStart });
+                points.push({ x: vWalkwayStart, y: hWalkwayEnd });
+                points.push({ x: end.x, y: hWalkwayEnd });
+              }
+            }
+          }
+        
+          points.push(end);
+          return polyline(points);
+        }
+
+        function computeEdgeRouting(edges, positions, minColumn = 0, maxColumn = 0) {
+          const startGroups = new Map();
+          const endGroups = new Map();
+          const routing = new Map();
+          for (const edge of edges) {
+            const fromPos = positions.get(edge.from);
+            const toPos = positions.get(edge.to);
+            if (!fromPos || !toPos) continue;
+            const startDirection = dominantDirection(fromPos, toPos);
+            const endDirection = dominantDirection(toPos, fromPos);
+            const startKey = ['out', edge.from, startDirection].join(':');
+            const endKey = ['in', edge.to, endDirection].join(':');
+            if (!startGroups.has(startKey)) startGroups.set(startKey, []);
+            if (!endGroups.has(endKey)) endGroups.set(endKey, []);
+            startGroups.get(startKey).push(edge.id);
+            endGroups.get(endKey).push(edge.id);
+            routing.set(edge.id, {
+              startDirection,
+              endDirection,
+              startOffset: 0,
+              endOffset: 0,
+              source: fromPos,
+              target: toPos,
+              fromColumn: fromPos.column,
+              toColumn: toPos.column,
+              fromRow: fromPos.row,
+              toRow: toPos.row,
+            });
+          }
+          const assignOffsets = (groups, accessor) => {
+            for (const [key, edgeIds] of groups) {
+              if (!edgeIds || edgeIds.length === 0) continue;
+              const offsets = computeLaneOffsets(edgeIds.length);
+              edgeIds.forEach((edgeId, index) => {
+                const info = routing.get(edgeId);
+                if (!info) return;
+                accessor(info, offsets[index]);
+              });
+            }
+          };
+          assignOffsets(startGroups, (info, offset) => {
+            info.startOffset = offset;
+          });
+          assignOffsets(endGroups, (info, offset) => {
+            info.endOffset = offset;
+          });
+          return routing;
+        }
+
+        function dominantDirection(source, target) {
+          const dx = target.x - source.x;
+          const dy = target.y - source.y;
+          if (Math.abs(dx) >= Math.abs(dy)) {
+            return dx >= 0 ? 'right' : 'left';
+          }
+          return dy >= 0 ? 'down' : 'up';
+        }
+
+        function computeLaneOffsets(count) {
+          // Edges should connect to the midpoint of the card's side,
+          // so we return an array of zeros to avoid any offset.
+          return new Array(count).fill(0);
+        }
+
+        function columnWalkway(column, direction, minColumn, maxColumn) {
+          if (!Number.isFinite(column)) return null;
+          const step = direction === 'right' ? 1 : direction === 'left' ? -1 : 0;
+          if (step === 0) return null;
+          const minSlot = (minColumn ?? column) - WALKWAY_EXTENSION_SLOTS * 2;
+          const maxSlot = (maxColumn ?? column) + WALKWAY_EXTENSION_SLOTS * 2;
+          const desired = clamp(column + step, minSlot, maxSlot);
+          return columnBaseX + (desired - minColumn) * (layoutRuntime.columnGap / 2);
+        }
+
+        function rowWalkway(row, direction, maxRow) {
+          if (!Number.isFinite(row)) return null;
+          const step = direction === 'down' ? 1 : direction === 'up' ? -1 : 0;
+          if (step === 0) return null;
+          const minSlot = -WALKWAY_EXTENSION_SLOTS * 2;
+          const maxSlot = (maxRow ?? row) + WALKWAY_EXTENSION_SLOTS * 2;
+          const desired = clamp(row + step, minSlot, maxSlot);
+          return layoutRuntime.marginY + desired * (layoutRuntime.rowGap / 2);
+        }
+
+        function enforceColumnClearance(value, direction, sourceNode, targetNode, minColumn, maxColumn) {
+          if (!Number.isFinite(value)) return value;
+          const slotToX = (slot) => columnBaseX + (slot - minColumn) * (layoutRuntime.columnGap / 2);
+          const minLimit = slotToX(minColumn - WALKWAY_EXTENSION_SLOTS * 2);
+          const maxLimit = slotToX(maxColumn + WALKWAY_EXTENSION_SLOTS * 2);
+          let adjusted = value;
+          if (direction === 'right') {
+            const bounds = [];
+            if (sourceNode) bounds.push(sourceNode.x + sourceNode.width / 2 + EDGE_CLEARANCE);
+            if (targetNode) bounds.push(targetNode.x + targetNode.width / 2 + EDGE_CLEARANCE);
+            const minBound = bounds.length > 0 ? Math.max(...bounds) : minLimit;
+            adjusted = Math.max(adjusted, minBound);
+          } else if (direction === 'left') {
+            const bounds = [];
+            if (sourceNode) bounds.push(sourceNode.x - sourceNode.width / 2 - EDGE_CLEARANCE);
+            if (targetNode) bounds.push(targetNode.x - targetNode.width / 2 - EDGE_CLEARANCE);
+            const maxBound = bounds.length > 0 ? Math.min(...bounds) : maxLimit;
+            adjusted = Math.min(adjusted, maxBound);
+          }
+          return clamp(adjusted, minLimit, maxLimit);
+        }
+
+        function enforceRowClearance(value, direction, sourceNode, targetNode, maxRow) {
+          if (!Number.isFinite(value)) return value;
+          const minLimit = layoutRuntime.marginY - WALKWAY_EXTENSION_SLOTS * layoutRuntime.rowGap;
+          const maxLimit = layoutRuntime.marginY + (maxRow + WALKWAY_EXTENSION_SLOTS) * layoutRuntime.rowGap;
+          let adjusted = value;
+          if (direction === 'down') {
+            const bounds = [];
+            if (sourceNode) bounds.push(sourceNode.y + sourceNode.height / 2 + EDGE_CLEARANCE);
+            if (targetNode) bounds.push(targetNode.y + targetNode.height / 2 + EDGE_CLEARANCE);
+            const minBound = bounds.length > 0 ? Math.max(...bounds) : minLimit;
+            adjusted = Math.max(adjusted, minBound);
+          } else if (direction === 'up') {
+            const bounds = [];
+            if (sourceNode) bounds.push(sourceNode.y - sourceNode.height / 2 - EDGE_CLEARANCE);
+            if (targetNode) bounds.push(targetNode.y - targetNode.height / 2 - EDGE_CLEARANCE);
+            const maxBound = bounds.length > 0 ? Math.min(...bounds) : maxLimit;
+            adjusted = Math.min(adjusted, maxBound);
+          }
+          return clamp(adjusted, minLimit, maxLimit);
+        }
+
+        function polyline(points) {
+          if (!Array.isArray(points) || points.length === 0) return '';
+          const filtered = [];
+          points.forEach((point) => {
+            if (!point) return;
+            const x = Number(point.x);
+            const y = Number(point.y);
+            const prev = filtered[filtered.length - 1];
+            if (prev && Math.abs(prev.x - x) <= ALIGN_TOLERANCE && Math.abs(prev.y - y) <= ALIGN_TOLERANCE) {
+              // skip point if it's too close to the previous one
+            } else {
+              filtered.push({ x, y });
+            }
+          });
+          const segments = [];
+          filtered.forEach((point, index) => {
+            const prefix = index === 0 ? 'M' : 'L';
+            segments.push(prefix, point.x.toFixed ? Number(point.x.toFixed(2)) : point.x, point.y.toFixed ? Number(point.y.toFixed(2)) : point.y);
+          });
+          return segments.join(' ');
+        }
+
+        function clamp(value, min, max) {
+          return Math.min(max, Math.max(min, value));
+        }
+
+        function titleCapacityFromWidth(width) {
+          if (!Number.isFinite(width)) return 18;
+          const usableWidth = Math.max(width - TITLE_TEXT_PADDING, 140);
+          const estimatedCapacity = Math.floor(usableWidth / TITLE_AVG_CHAR_WIDTH);
+          return Math.max(10, estimatedCapacity);
+        }
+
+        function subtitleCapacityFromWidth(width) {
+          if (!Number.isFinite(width)) return 28;
+          const usableWidth = Math.max(width - (SUBTITLE_LEFT_PADDING + SUBTITLE_RIGHT_PADDING), 160);
+          const estimatedCapacity = Math.floor(usableWidth / SUBTITLE_AVG_CHAR_WIDTH) - 1;
+          return Math.max(8, estimatedCapacity);
+        }
+
+        function wrapText(text, maxCharsPerLine) {
+          if (!text) return [''];
+          const limit = Math.max(8, maxCharsPerLine ?? 24);
+          const words = String(text).split(/\\s+/);
+          const lines = [];
+          let current = '';
+          const flushCurrent = () => {
+            if (current) {
+              lines.push(current);
+              current = '';
+            }
+          };
+          for (const word of words) {
+            if (!word) continue;
+            if (word.length > limit) {
+              flushCurrent();
+              for (let index = 0; index < word.length; index += limit) {
+                lines.push(word.slice(index, index + limit));
+              }
+              continue;
+            }
+            if (!current) {
+              current = word;
+              continue;
+            }
+            if ((current + ' ' + word).length <= limit) {
+              current += ' ' + word;
+            } else {
+              flushCurrent();
+              current = word;
+            }
+          }
+          flushCurrent();
+          return lines.length > 0 ? lines : [''];
+        }
+      }
 
       function highlightEdge(edgeId) {
         for (const [id, edgeEl] of state.graphElements.edges) {
@@ -1121,5 +1757,5 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
 
       await refresh();
       setInterval(refresh, REFRESH_INTERVAL);
-  `;
+  `
 }

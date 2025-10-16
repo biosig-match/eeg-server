@@ -61,7 +61,7 @@ export const dashboardStyles = `
       main.layout {
         flex: 1;
         display: grid;
-        grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.6fr);
+        grid-template-columns: minmax(0, 4.4fr) minmax(0, 1.6fr);
         gap: 24px;
         padding: 0 40px 40px;
         align-content: start;
@@ -153,9 +153,9 @@ export const dashboardStyles = `
       .graph-wrapper {
         position: relative;
         width: 100%;
-        aspect-ratio: 3 / 1;
-        min-height: 360px;
-        max-height: 560px;
+        min-height: clamp(640px, 78vh, 1280px);
+        height: min(88vh, 1380px);
+        max-height: 95vh;
         background: rgba(10, 17, 36, 0.75);
         border-radius: 16px;
         border: 1px solid rgba(148, 163, 184, 0.18);
@@ -514,62 +514,129 @@ export const dashboardStyles = `
       .span-2 {
         grid-column: span 2;
       }
-      svg .node-circle {
-        transition: stroke 0.25s ease, r 0.25s ease, filter 0.25s ease, opacity 0.25s ease;
-        stroke-width: 2;
+      svg {
+        --type-scale: 1;
+        --node-title-size: 3.00rem;
+        --node-subtitle-size: 2.50rem;
       }
-      svg .node-circle.status-ok {
-        stroke: rgba(34, 197, 94, 0.65);
-        fill: rgba(34, 197, 94, 0.18);
+      svg .graph-backdrop {
+        pointer-events: none;
       }
-      svg .node-circle.status-degraded {
-        stroke: rgba(251, 191, 36, 0.65);
-        fill: rgba(251, 191, 36, 0.15);
+      svg .graph-surface {
+        fill: rgba(6, 12, 29, 0.88);
+        stroke: rgba(148, 163, 184, 0.1);
+        stroke-width: 1;
       }
-      svg .node-circle.status-error {
-        stroke: rgba(248, 113, 113, 0.75);
-        fill: rgba(248, 113, 113, 0.2);
+      svg .graph-grid {
+        pointer-events: none;
       }
-      svg .node-circle.status-unknown {
-        stroke: rgba(100, 116, 139, 0.6);
-        fill: rgba(100, 116, 139, 0.18);
+      svg .grid-line {
+        stroke: rgba(148, 163, 184, 0.14);
+        stroke-width: 1;
+        stroke-dasharray: 6 10;
       }
-      svg .node-circle.kind-gateway {
-        fill: rgba(56, 189, 248, 0.16);
+      svg .grid-line.horizontal {
+        opacity: 0.6;
+        stroke-dasharray: 4 12;
       }
-      svg .node-group.hovered .node-circle {
-        stroke-width: 3.2;
-        filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.55));
-      }
-      svg .node-group.dimmed .node-circle {
+      svg .grid-line.vertical {
         opacity: 0.35;
       }
-      svg .node-label {
+      svg .row-label {
+        fill: rgba(148, 163, 184, 0.9);
+        font-size: 3.0rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        pointer-events: none;
+      }
+      svg .row-label.kind-gateway {
+        fill: rgba(56, 189, 248, 0.8);
+      }
+      svg .row-label.kind-service {
+        fill: rgba(168, 85, 247, 0.82);
+      }
+      svg .row-label.kind-broker {
+        fill: rgba(250, 204, 21, 0.82);
+      }
+      svg .row-label.kind-queue {
+        fill: rgba(249, 115, 22, 0.82);
+      }
+      svg .row-label.kind-database {
+        fill: rgba(248, 113, 113, 0.82);
+      }
+      svg .row-label.kind-storage {
+        fill: rgba(52, 211, 153, 0.82);
+      }
+      svg .node-group {
+        transition: transform 0.25s ease;
+      }
+      svg .node-card {
+        fill: rgba(17, 24, 39, 0.85);
+        stroke: rgba(148, 163, 184, 0.22);
+        stroke-width: 1.4;
+        transition: stroke 0.25s ease, fill 0.25s ease, filter 0.25s ease, opacity 0.25s ease;
+      }
+      svg .node-card.status-ok {
+        fill: rgba(22, 163, 74, 0.22);
+        stroke: rgba(34, 197, 94, 0.6);
+      }
+      svg .node-card.status-degraded {
+        fill: rgba(251, 191, 36, 0.22);
+        stroke: rgba(251, 191, 36, 0.52);
+      }
+      svg .node-card.status-error {
+        fill: rgba(248, 113, 113, 0.28);
+        stroke: rgba(248, 113, 113, 0.64);
+      }
+      svg .node-card.status-unknown {
+        fill: rgba(100, 116, 139, 0.25);
+        stroke: rgba(100, 116, 139, 0.45);
+      }
+      svg .node-group.hovered .node-card {
+        filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.45));
+        stroke-width: 2.2;
+      }
+      svg .node-group.hovered {
+        transform: translateY(-6px) scale(1.02);
+      }
+      svg .node-group.dimmed .node-card {
+        opacity: 0.35;
+      }
+      svg .node-title,
+      svg .node-subtitle {
+        pointer-events: none;
+      }
+      svg .node-title {
         fill: var(--text);
-        font-size: 0.78rem;
+        font-size: calc(var(--node-title-size) * var(--type-scale));
+        font-weight: 700;
+        letter-spacing: 0.005em;
+        white-space: pre-line;
         text-anchor: middle;
-        pointer-events: none;
-        font-weight: 600;
-        transition: opacity 0.25s ease;
       }
-      svg .node-description {
+      svg .node-subtitle {
         fill: var(--muted);
-        font-size: 0.65rem;
-        text-anchor: middle;
-        pointer-events: none;
-        transition: opacity 0.25s ease;
+        font-size: calc(var(--node-subtitle-size) * var(--type-scale));
+        letter-spacing: 0.012em;
+        white-space: pre-line;
+        line-height: 1.5;
+        text-anchor: start;
+        text-align: left;
       }
-      svg .node-group.dimmed .node-label,
-      svg .node-group.dimmed .node-description {
+      svg .node-group.dimmed .node-title,
+      svg .node-group.dimmed .node-subtitle {
         opacity: 0.45;
       }
-      svg .node-group.hovered .node-label {
-        opacity: 1;
+      svg .node-group.selected .node-card {
+        stroke-width: 2.6;
+        stroke: rgba(96, 165, 250, 0.9);
+        filter: drop-shadow(0 0 16px rgba(96, 165, 250, 0.65));
       }
       svg .flow-path {
         fill: none;
         stroke: rgba(148, 163, 184, 0.4);
         stroke-linecap: round;
+        stroke-linejoin: round;
         marker-end: url(#arrowhead);
         stroke-dasharray: 10 18;
         animation: flow var(--flow-speed, 4s) linear infinite;
@@ -625,10 +692,6 @@ export const dashboardStyles = `
       svg .flow-pulse.dimmed {
         opacity: 0.25;
       }
-      svg .node-group.selected .node-circle {
-        stroke-width: 3.5;
-        r: calc(var(--node-radius, 30) + 2);
-      }
       @keyframes flow {
         from {
           stroke-dashoffset: 0;
@@ -671,4 +734,4 @@ export const dashboardStyles = `
           min-height: 320px;
         }
       }
-`;
+`
