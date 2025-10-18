@@ -10,7 +10,6 @@ app = Flask(__name__)
 host = RealtimeApplicationHost()
 for application in discover_applications():
     host.register_application(application)
-host.start_background_threads()
 
 
 @app.route("/health", methods=["GET"])
@@ -43,5 +42,6 @@ def start_realtime_analyzer() -> Flask:
 
 
 if __name__ == "__main__":
+    host.start_background_threads()
     print("Flask APIサーバーを http://0.0.0.0:5002 で起動します（開発モード）。")
     app.run(host="0.0.0.0", port=5002)

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import copy
+import errno
+import socket
 import threading
 import time
 from collections import defaultdict
@@ -48,7 +51,7 @@ class RealtimeApplicationHost:
             if not user_results:
                 return None
             return {
-                app_id: dict(result)
+                app_id: copy.deepcopy(result)
                 for app_id, result in user_results.items()
             }
 
@@ -67,8 +70,13 @@ class RealtimeApplicationHost:
 
     def _analysis_worker(self) -> None:
         print("✅ 解析ワーカースレッドが起動しました。")
+        next_analysis_time = time.time() + settings.analysis_interval_seconds
+
         while True:
-            time.sleep(settings.analysis_interval_seconds)
+            sleep_duration = max(0.0, next_analysis_time - time.time())
+            if sleep_duration:
+                time.sleep(sleep_duration)
+            next_analysis_time += settings.analysis_interval_seconds
 
             for application in self._applications:
                 application.before_analysis_cycle()
@@ -110,6 +118,9 @@ class RealtimeApplicationHost:
         """Consume raw data from RabbitMQ and update user buffers."""
         zstd_decompressor = zstandard.ZstdDecompressor()
         while True:
+            connection = None
+            channel = None
+            should_retry = False
             try:
                 connection = pika.BlockingConnection(pika.URLParameters(settings.rabbitmq_url))
                 channel = connection.channel()
@@ -135,6 +146,14 @@ class RealtimeApplicationHost:
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
 
+                        lsb_to_volts_value = float(lsb_to_volts)
+                        if lsb_to_volts_value == 0.0:
+                            print(
+                                f"[Realtime] lsb_to_voltsが0のためユーザー({user_id})のメッセージを解析対象から除外します。"
+                            )
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            return
+
                         decompressed = zstd_decompressor.decompress(body)
                         parsed_data = parse_eeg_binary_payload_v4(decompressed)
 
@@ -151,7 +170,7 @@ class RealtimeApplicationHost:
                         self._upsert_user_state(
                             user_id=user_id,
                             sampling_rate=float(sampling_rate),
-                            lsb_to_volts=float(lsb_to_volts),
+                            lsb_to_volts=lsb_to_volts_value,
                             header_info=header_info,
                             signals=signals,
                             impedances=impedances,
@@ -159,20 +178,32 @@ class RealtimeApplicationHost:
 
                         ch.basic_ack(delivery_tag=method.delivery_tag)
                     except Exception as exc:
-                        print(f"RabbitMQコールバックで予期せぬエラー: {exc}")
-                        ch.basic_ack(delivery_tag=method.delivery_tag)
+                        self._handle_callback_exception(exc, ch, method.delivery_tag)
 
                 channel.basic_consume(queue=queue_name, on_message_callback=callback)
                 print("🚀 リアルタイムアプリケーションホストが起動し、圧縮生データの受信待機中です。")
                 channel.start_consuming()
-            except pika_exceptions.AMQPConnectionError:
+            except pika_exceptions.AMQPConnectionError as exc:
+                should_retry = True
                 self._rabbitmq_connected.clear()
-                print("RabbitMQへの接続に失敗... 5秒後に再試行します。")
-                time.sleep(5)
+                print(f"RabbitMQへの接続に失敗: {exc}。5秒後に再試行します。")
             except Exception as exc:
+                should_retry = True
                 self._rabbitmq_connected.clear()
                 print(f"予期せぬエラーでコンシューマが停止: {exc}。5秒後に再起動します...")
-                time.sleep(5)
+            finally:
+                if channel is not None and getattr(channel, "is_open", False):
+                    try:
+                        channel.close()
+                    except Exception as close_exc:
+                        print(f"チャネルのクローズ中にエラー: {close_exc}")
+                if connection is not None and getattr(connection, "is_open", False):
+                    try:
+                        connection.close()
+                    except Exception as close_exc:
+                        print(f"接続のクローズ中にエラー: {close_exc}")
+                if should_retry:
+                    time.sleep(5)
 
     def _upsert_user_state(
         self,
@@ -184,6 +215,10 @@ class RealtimeApplicationHost:
         signals: np.ndarray,
         impedances: np.ndarray,
     ) -> None:
+        if lsb_to_volts == 0.0:
+            print(f"[Realtime] lsb_to_voltsが0のためユーザー({user_id})のバッファ更新をスキップします。")
+            return
+
         with self._buffer_lock:
             state = self._user_states.get(user_id)
             needs_reset = True
@@ -227,6 +262,7 @@ class RealtimeApplicationHost:
                     application.on_profile_initialized(user_id, state)
 
             state = self._user_states[user_id]
+            state.profile["lsb_to_volts"] = lsb_to_volts
 
             tracker = state.tracker
             tracker.update(signals, impedances)
@@ -250,11 +286,57 @@ class RealtimeApplicationHost:
             "ch_types": list(profile["ch_types"]),
             "sampling_rate": float(profile["sampling_rate"]),
             "lsb_to_volts": float(profile["lsb_to_volts"]),
-            "mne_info": profile["mne_info"],
+            "mne_info": profile["mne_info"].copy(),
         }
 
         if "bad_channels" in profile:
             cloned["bad_channels"] = list(profile["bad_channels"])
         if "channel_report" in profile:
-            cloned["channel_report"] = dict(profile["channel_report"])
+            cloned["channel_report"] = copy.deepcopy(profile["channel_report"])
         return cloned
+
+    @staticmethod
+    def _is_transient_error(error: Exception) -> bool:
+        if isinstance(
+            error,
+            (
+                pika_exceptions.AMQPConnectionError,
+                ConnectionError,
+                TimeoutError,
+                socket.timeout,
+            ),
+        ):
+            return True
+
+        err_no = getattr(error, "errno", None)
+        if err_no in {
+            errno.ECONNREFUSED,
+            errno.ETIMEDOUT,
+            errno.ECONNRESET,
+            errno.ENETDOWN,
+            errno.ENETUNREACH,
+        }:
+            return True
+
+        code = getattr(error, "pgcode", None) or getattr(error, "code", None)
+        if code in {"08006", "08003", "57P03"}:
+            return True
+
+        message = str(error).lower()
+        transient_tokens = (
+            "timeout",
+            "temporarily",
+            "connection reset",
+            "broken pipe",
+            "service unavailable",
+            "connection aborted",
+        )
+        return any(token in message for token in transient_tokens)
+
+    def _handle_callback_exception(self, exc: Exception, ch, delivery_tag) -> None:
+        if self._is_transient_error(exc):
+            print(f"RabbitMQコールバックで一時的なエラー: {exc}。メッセージを再キューします。")
+            ch.basic_nack(delivery_tag=delivery_tag, requeue=True)
+        else:
+            print(f"RabbitMQコールバックで恒久的なエラー: {exc}。メッセージを破棄します。")
+            ch.basic_ack(delivery_tag=delivery_tag)

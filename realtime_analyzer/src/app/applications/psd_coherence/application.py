@@ -80,16 +80,28 @@ class PsdCoherenceApplication(RealtimeApplication):
             (idx, ch) for idx, ch in enumerate(analysis_channels) if channel_stats[ch]["std"] < 1e-9
         ]
         if low_variance:
+            low_variance_channels = [ch for _, ch in low_variance]
             print(
-                f"[Realtime] Low-variance channels detected for user {user_id}: "
-                f"{[ch for _, ch in low_variance]}"
+                f"[Realtime] Low-variance channels detected for user {user_id}: {low_variance_channels}. Marking as bad."
             )
-            t = np.arange(data_in_volts.shape[1])
-            for idx, ch in low_variance:
-                synthetic = 1e-6 * np.sin(0.02 * t + idx) + self._rng.normal(
-                    loc=0.0, scale=5e-7, size=data_in_volts.shape[1]
+            bad_channels.update(low_variance_channels)
+            analysis_indices = [
+                idx
+                for idx, (name, ch_type) in enumerate(
+                    zip(profile["ch_names"], profile["ch_types"], strict=False)
                 )
-                data_in_volts[idx] = synthetic
+                if ch_type in allowed_types and name not in bad_channels
+            ]
+
+            if not analysis_indices:
+                if settings.enable_debug_logging:
+                    print(f"ユーザー({user_id})は低分散チャネルのみのため解析をスキップします。")
+                return None
+
+            analysis_channels = [profile["ch_names"][idx] for idx in analysis_indices]
+            data_chunk_good = window[:, analysis_indices]
+            raw_signals = data_chunk_good.T.astype(np.float64, copy=False)
+            data_in_volts = raw_signals * profile["lsb_to_volts"]
             channel_stats = build_stats()
 
         if settings.enable_debug_logging:
