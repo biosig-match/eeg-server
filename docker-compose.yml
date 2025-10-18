@@ -232,6 +232,54 @@ services:
           memory: 512M
     logging: *common-logging
 
+  observability_dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bun
+      args:
+        SERVICE_NAME: observability_dashboard
+    container_name: eeg_observability_dashboard
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: [*postgres-env, *rabbitmq-env, *minio-env]
+      RABBITMQ_MGMT_PORT: ${RABBITMQ_MGMT_PORT}
+      RAW_DATA_EXCHANGE: ${RAW_DATA_EXCHANGE}
+      PROCESSING_QUEUE: ${PROCESSING_QUEUE}
+      MEDIA_PROCESSING_QUEUE: ${MEDIA_PROCESSING_QUEUE}
+      DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
+      EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
+      STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
+      MINIO_RAW_DATA_BUCKET: ${MINIO_RAW_DATA_BUCKET}
+      MINIO_MEDIA_BUCKET: ${MINIO_MEDIA_BUCKET}
+      MINIO_BIDS_EXPORTS_BUCKET: ${MINIO_BIDS_EXPORTS_BUCKET}
+      DASHBOARD_REFRESH_INTERVAL_MS: ${OBSERVABILITY_DASHBOARD_REFRESH_MS:-4000}
+      OBSERVABILITY_BASIC_USER: ${OBSERVABILITY_BASIC_USER:-observer}
+      OBSERVABILITY_BASIC_PASSWORD: ${OBSERVABILITY_BASIC_PASSWORD:-changeme}
+      OBSERVABILITY_BASIC_REALM: ${OBSERVABILITY_BASIC_REALM:-Observability Dashboard}
+    ports:
+      - '${OBSERVABILITY_PORT-8090}:9000'
+    networks:
+      - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
+    logging: *common-logging
+
   ingress:
     build: ./nginx
     container_name: eeg_ingress

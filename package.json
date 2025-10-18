@@ -10,7 +10,8 @@
     "media_processor",
     "processor",
     "session_manager",
-    "stimulus_asset_processor"
+    "stimulus_asset_processor",
+    "observability_dashboard"
   ],
   "devDependencies": {
     "bun-types": "1.2.23",

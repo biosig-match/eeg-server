@@ -14,6 +14,7 @@ COPY media_processor/package.json ./media_processor/
 COPY processor/package.json ./processor/
 COPY session_manager/package.json ./session_manager/
 COPY stimulus_asset_processor/package.json ./stimulus_asset_processor/
+COPY observability_dashboard/package.json ./observability_dashboard/
 
 RUN bun install --frozen-lockfile
 
