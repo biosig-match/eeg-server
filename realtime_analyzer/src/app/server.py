@@ -12,6 +12,11 @@ for application in discover_applications():
     host.register_application(application)
 
 
+@app.before_request
+def _ensure_background_threads() -> None:
+    host.start_background_threads()
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     status = "ok" if host.rabbitmq_connected() else "unhealthy"

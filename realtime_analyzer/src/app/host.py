@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import copy
+import decimal
 import errno
 import socket
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import mne
 import numpy as np
@@ -33,17 +34,36 @@ class RealtimeApplicationHost:
         self._buffer_lock = threading.Lock()
         self._threads_started = False
         self._rabbitmq_connected = threading.Event()
+        self._thread_guard = threading.Lock()
+        self._threads: Dict[str, threading.Thread] = {}
 
     def register_application(self, application: RealtimeApplication) -> None:
         self._applications.append(application)
         application.on_registered()
 
     def start_background_threads(self) -> None:
-        if self._threads_started:
-            return
-        self._threads_started = True
-        threading.Thread(target=self._rabbitmq_consumer, daemon=True).start()
-        threading.Thread(target=self._analysis_worker, daemon=True).start()
+        with self._thread_guard:
+            if self._threads_started:
+                dead_threads = [
+                    name for name, thread in self._threads.items() if not thread.is_alive()
+                ]
+                if not dead_threads:
+                    return
+                print(
+                    f"⚠️ 背景スレッドが停止していたため再起動します: {', '.join(dead_threads)}"
+                )
+                self._threads_started = False
+
+            print("🧵 リアルタイム解析の背景スレッドを起動します。")
+            self._threads_started = True
+            self._threads = {}
+            self._launch_thread("realtime_rabbitmq_consumer", self._rabbitmq_consumer)
+            self._launch_thread("realtime_analysis_worker", self._analysis_worker)
+
+    def _launch_thread(self, name: str, target: Callable[[], None]) -> None:
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        thread.start()
+        self._threads[name] = thread
 
     def get_user_results(self, user_id: str) -> Optional[Dict[str, Any]]:
         with self._analysis_lock:
@@ -134,22 +154,28 @@ class RealtimeApplicationHost:
                     try:
                         headers = properties.headers or {}
                         user_id = headers.get("user_id")
-                        sampling_rate = headers.get("sampling_rate")
-                        lsb_to_volts = headers.get("lsb_to_volts")
+                        sampling_rate_value = self._coerce_float(headers.get("sampling_rate"))
+                        lsb_to_volts_value = self._coerce_float(
+                            headers.get("lsb_to_volts"),
+                            headers.get("lsb_to_volts_str"),
+                        )
 
-                        if not (
-                            isinstance(user_id, str)
-                            and isinstance(sampling_rate, (int, float))
-                            and isinstance(lsb_to_volts, (int, float))
-                        ):
+                        if not isinstance(user_id, str) or sampling_rate_value is None:
                             print(f"警告: メッセージヘッダーが不完全または型が不正です: {headers}")
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
 
-                        lsb_to_volts_value = float(lsb_to_volts)
+                        if lsb_to_volts_value is None:
+                            print(
+                                "[Realtime] lsb_to_voltsヘッダーを解釈できないためユーザー("
+                                f"{user_id})のメッセージを解析対象から除外します。 headers={headers}"
+                            )
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            return
                         if lsb_to_volts_value == 0.0:
                             print(
-                                f"[Realtime] lsb_to_voltsが0のためユーザー({user_id})のメッセージを解析対象から除外します。"
+                                "[Realtime] lsb_to_voltsが0のためユーザー("
+                                f"{user_id})のメッセージを解析対象から除外します。 headers={headers}"
                             )
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
@@ -169,7 +195,7 @@ class RealtimeApplicationHost:
 
                         self._upsert_user_state(
                             user_id=user_id,
-                            sampling_rate=float(sampling_rate),
+                            sampling_rate=sampling_rate_value,
                             lsb_to_volts=lsb_to_volts_value,
                             header_info=header_info,
                             signals=signals,
@@ -294,6 +320,29 @@ class RealtimeApplicationHost:
         if "channel_report" in profile:
             cloned["channel_report"] = copy.deepcopy(profile["channel_report"])
         return cloned
+
+    @staticmethod
+    def _coerce_float(*candidates: Any) -> Optional[float]:
+        zero_value: Optional[float] = None
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            if isinstance(candidate, (int, float)):
+                value = float(candidate)
+            elif isinstance(candidate, decimal.Decimal):
+                value = float(candidate)
+            elif isinstance(candidate, str):
+                try:
+                    value = float(candidate)
+                except ValueError:
+                    continue
+            else:
+                continue
+
+            if value != 0.0:
+                return value
+            zero_value = 0.0
+        return zero_value
 
     @staticmethod
     def _is_transient_error(error: Exception) -> bool:
