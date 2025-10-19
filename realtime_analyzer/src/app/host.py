@@ -52,7 +52,15 @@ class RealtimeApplicationHost:
                 print(
                     f"⚠️ 背景スレッドが停止していたため再起動します: {', '.join(dead_threads)}"
                 )
-                self._threads_started = False
+                # 古いスレッドオブジェクトの参照を明示的に削除
+                for name in dead_threads:
+                    del self._threads[name]
+                # デッドスレッドのみを再起動
+                if "realtime_rabbitmq_consumer" in dead_threads:
+                    self._launch_thread("realtime_rabbitmq_consumer", self._rabbitmq_consumer)
+                if "realtime_analysis_worker" in dead_threads:
+                    self._launch_thread("realtime_analysis_worker", self._analysis_worker)
+                return
 
             print("🧵 リアルタイム解析の背景スレッドを起動します。")
             self._threads_started = True
@@ -167,15 +175,15 @@ class RealtimeApplicationHost:
 
                         if lsb_to_volts_value is None:
                             print(
-                                "[Realtime] lsb_to_voltsヘッダーを解釈できないためユーザー("
-                                f"{user_id})のメッセージを解析対象から除外します。 headers={headers}"
+                                f"[Realtime] lsb_to_volts ヘッダーを解釈できないため、ユーザー({user_id})の"
+                                f"メッセージを除外します。headers={headers}"
                             )
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
                         if lsb_to_volts_value == 0.0:
                             print(
-                                "[Realtime] lsb_to_voltsが0のためユーザー("
-                                f"{user_id})のメッセージを解析対象から除外します。 headers={headers}"
+                                f"[Realtime] lsb_to_volts=0 のため、ユーザー({user_id})の"
+                                f"メッセージを除外します。headers={headers}"
                             )
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
@@ -323,6 +331,21 @@ class RealtimeApplicationHost:
 
     @staticmethod
     def _coerce_float(*candidates: Any) -> Optional[float]:
+        """
+        複数の候補から有効な浮動小数点数を抽出する。
+
+        最初の非ゼロ数値を返す。すべてゼロの場合は 0.0 を返す。
+        すべて None または変換不可の場合は None を返す。
+
+        この関数は、RabbitMQ ヘッダーの型多様性（int, float, Decimal, str）に対応し、
+        lsb_to_volts のゼロ除算を防ぐため、非ゼロ値を優先的に返す。
+
+        Args:
+            *candidates: 変換候補（int, float, Decimal, str, None）
+
+        Returns:
+            最初の非ゼロ float 値、すべてゼロなら 0.0、すべて無効なら None
+        """
         zero_value: Optional[float] = None
         for candidate in candidates:
             if candidate is None:
