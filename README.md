@@ -30,6 +30,7 @@
 | **Realtime Analyzer** | `eeg_realtime_analyzer`  | **リアルタイム解析 API (Python/Flask)**。処理済みの脳波データを購読し、PSD や同期度を計算してアプリに結果を提供する。                                     |
 | **Database**          | `eeg_db`                 | **PostgreSQL データベース (TimescaleDB 拡張)**。実験メタデータ、セッション情報、イベント情報、メディアファイル情報を永続化する。                          |
 | **Message Queue**     | `eeg_rabbitmq`           | **メッセージブローカー (RabbitMQ)**。サービス間のデータの受け渡しを非同期で行い、システム全体の安定性を担保する。                                         |
+| **Observability Dashboard** | `observability_dashboard` | **可視化/監査サービス (Bun/Hono)**。RabbitMQ/DB/MinIO とサービス間のデータフロー・タスク状況をブラウザで確認できる。 |
 
 ## 3\. データフローとスキーマ詳細 (Data Flow & Schema Details)
 

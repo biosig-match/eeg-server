@@ -175,6 +175,7 @@ app.post('/api/v1/data', zValidator('json', dataSchema), async (c) => {
     timestamp_end_ms,
     sampling_rate,
     lsb_to_volts,
+    lsb_to_volts_str: lsb_to_volts.toString(),
     ...(session_id && { session_id }),
   }
 
@@ -187,7 +188,7 @@ app.post('/api/v1/data', zValidator('json', dataSchema), async (c) => {
   })
 
   console.log(
-    `[HTTP:/data] Published sensor data for user: ${user_id}, device: ${device_id} (${binaryPayload.byteLength} bytes)`,
+    `[HTTP:/data] Published sensor data for user: ${user_id}, device: ${device_id} (${binaryPayload.byteLength} bytes), lsb_to_volts=${messageHeaders.lsb_to_volts}`,
   )
   return c.json({ status: 'accepted' }, 202)
 })
