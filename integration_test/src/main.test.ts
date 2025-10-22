@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import fs from 'fs/promises'
 import path from 'path'
 import { Pool } from 'pg'
-import * as Minio from 'minio'
+import { Client as S3CompatibleClient } from 'minio'
 import { compress, init as initZstd } from '@bokuweb/zstd-wasm'
 import JSZip from 'jszip'
 import { Buffer } from 'buffer'
@@ -11,16 +11,41 @@ import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_correcto
 
 const BASE_URL = 'http://localhost:8080/api/v1'
 const DATABASE_URL = 'postgres://admin:password@localhost:5432/eeg_data'
-const MINIO_CONFIG = {
+const OBJECT_STORAGE_CONFIG = {
   endPoint: 'localhost',
-  port: 9000,
+  port: 8333,
   useSSL: false,
-  accessKey: 'minioadmin',
-  secretKey: 'minioadmin',
+  accessKey: 'storageadmin',
+  secretKey: 'storageadmin',
 }
-const MINIO_RAW_DATA_BUCKET = 'raw-data'
-const MINIO_MEDIA_BUCKET = 'media'
+const OBJECT_STORAGE_RAW_DATA_BUCKET = 'raw-data'
+const OBJECT_STORAGE_MEDIA_BUCKET = 'media'
 const BIDS_BUCKET = 'bids-exports'
+
+function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
+  const client = new S3CompatibleClient({
+    endPoint: config.endPoint,
+    port: config.port,
+    useSSL: config.useSSL,
+    accessKey: config.accessKey,
+    secretKey: config.secretKey,
+  })
+
+  return {
+    async fPutObject(
+      bucketName: string,
+      objectId: string,
+      filePath: string,
+      metadata: Record<string, string> = {},
+    ): Promise<void> {
+      const exists = await client.bucketExists(bucketName).catch(() => false)
+      if (!exists) {
+        await client.makeBucket(bucketName)
+      }
+      await client.fPutObject(bucketName, objectId, filePath, metadata)
+    },
+  }
+}
 
 const ASSETS_DIR = path.resolve(__dirname, '../assets')
 const TEST_OUTPUT_DIR = path.resolve(__dirname, '../test-output')
@@ -263,7 +288,9 @@ interface ScenarioConfig {
 }
 
 let dbPool: Pool
-let minioClient: Minio.Client
+type ObjectStorageTestClient = ReturnType<typeof createObjectStorageTestClient>
+
+let objectStorageClient: ObjectStorageTestClient
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -472,7 +499,7 @@ async function seedCalibrationAssets() {
     { f: 'house01.png', t: 'nontarget' },
   ]) {
     const objectId = `stimuli/calibration/${asset.f}`
-    await minioClient.fPutObject(MINIO_MEDIA_BUCKET, objectId, path.join(ASSETS_DIR, asset.f))
+    await objectStorageClient.fPutObject(OBJECT_STORAGE_MEDIA_BUCKET, objectId, path.join(ASSETS_DIR, asset.f))
     await dbPool.query(
       'INSERT INTO calibration_items (file_name, item_type, object_id) VALUES ($1, $2, $3)',
       [asset.f, asset.t, objectId],
@@ -841,7 +868,7 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
 beforeAll(async () => {
   await initZstd()
   dbPool = new Pool({ connectionString: DATABASE_URL })
-  minioClient = new Minio.Client(MINIO_CONFIG)
+  objectStorageClient = createObjectStorageTestClient(OBJECT_STORAGE_CONFIG)
   await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
 })
 

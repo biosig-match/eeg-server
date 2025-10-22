@@ -22,15 +22,15 @@ const envSchema = z.object({
   RABBITMQ_URL: z.string().url(),
   RAW_DATA_EXCHANGE: z.string().min(1).default('raw_data_exchange'),
   PROCESSING_QUEUE: z.string().min(1).default('processing_queue'),
-  MINIO_ENDPOINT: z.string().min(1).default('minio'),
-  MINIO_PORT: z.coerce.number().default(9000),
-  MINIO_ACCESS_KEY: z.string().min(1).default('minioadmin'),
-  MINIO_SECRET_KEY: z.string().min(1).default('minioadmin'),
-  MINIO_USE_SSL: z
-    .string()
+  OBJECT_STORAGE_ENDPOINT: z.string().min(1).default('object-storage'),
+  OBJECT_STORAGE_PORT: z.coerce.number().default(8333),
+  OBJECT_STORAGE_ACCESS_KEY: z.string().min(1).default('storageadmin'),
+  OBJECT_STORAGE_SECRET_KEY: z.string().min(1).default('storageadmin'),
+  OBJECT_STORAGE_USE_SSL: z
+    .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
-  MINIO_RAW_DATA_BUCKET: z.string().min(1).default('raw-data'),
+  OBJECT_STORAGE_RAW_DATA_BUCKET: z.string().min(1).default('raw-data'),
   PORT: z.coerce.number().default(3010),
 })
 
@@ -39,12 +39,12 @@ const parsedEnv = envSchema.safeParse({
   RABBITMQ_URL: derivedRabbitUrl,
   RAW_DATA_EXCHANGE: rawEnv.RAW_DATA_EXCHANGE,
   PROCESSING_QUEUE: rawEnv.PROCESSING_QUEUE,
-  MINIO_ENDPOINT: rawEnv.MINIO_ENDPOINT,
-  MINIO_PORT: rawEnv.MINIO_PORT,
-  MINIO_ACCESS_KEY: rawEnv.MINIO_ACCESS_KEY,
-  MINIO_SECRET_KEY: rawEnv.MINIO_SECRET_KEY,
-  MINIO_USE_SSL: rawEnv.MINIO_USE_SSL,
-  MINIO_RAW_DATA_BUCKET: rawEnv.MINIO_RAW_DATA_BUCKET,
+  OBJECT_STORAGE_ENDPOINT: rawEnv.OBJECT_STORAGE_ENDPOINT,
+  OBJECT_STORAGE_PORT: rawEnv.OBJECT_STORAGE_PORT,
+  OBJECT_STORAGE_ACCESS_KEY: rawEnv.OBJECT_STORAGE_ACCESS_KEY,
+  OBJECT_STORAGE_SECRET_KEY: rawEnv.OBJECT_STORAGE_SECRET_KEY,
+  OBJECT_STORAGE_USE_SSL: rawEnv.OBJECT_STORAGE_USE_SSL,
+  OBJECT_STORAGE_RAW_DATA_BUCKET: rawEnv.OBJECT_STORAGE_RAW_DATA_BUCKET,
   PORT: rawEnv.PORT,
 })
 

@@ -54,14 +54,14 @@ export const services: ServiceDefinition[] = [
     id: 'processor',
     displayName: 'Processor',
     kind: 'service',
-    description: 'センサーバッチを伸長してTimescaleDBへ保存し、MinIOにオブジェクトを書き込みます。',
+    description: 'センサーバッチを伸長してTimescaleDBへ保存し、オブジェクトストレージにオブジェクトを書き込みます。',
     healthUrl: 'http://processor:3010/health',
   },
   {
     id: 'media_processor',
     displayName: 'Media Processor',
     kind: 'service',
-    description: 'メディアアップロードを取り込み、メタデータを正規化してMinIOへ保存します。',
+    description: 'メディアアップロードを取り込み、メタデータを正規化してオブジェクトストレージへ保存します。',
     healthUrl: 'http://media_processor:3020/health',
   },
   {
@@ -82,14 +82,14 @@ export const services: ServiceDefinition[] = [
     id: 'event_corrector',
     displayName: 'Event Corrector',
     kind: 'service',
-    description: 'MinIOから生データを取得し、イベントのタイムラインを補正して結果を保存します。',
+    description: 'オブジェクトストレージから生データを取得し、イベントのタイムラインを補正して結果を保存します。',
     healthUrl: 'http://event_corrector:3040/health',
   },
   {
     id: 'stimulus_asset_processor',
     displayName: 'Stimulus Asset Processor',
     kind: 'service',
-    description: '刺激アセットを処理し、生成した成果物をMinIOへアップロードします。',
+    description: '刺激アセットを処理し、生成した成果物をオブジェクトストレージへアップロードします。',
     healthUrl: 'http://stimulus_asset_processor:3050/health',
   },
   {
@@ -133,10 +133,10 @@ export const services: ServiceDefinition[] = [
     description: '実験・セッション・イベント・タスクメタデータを保持する主要なリレーショナルストアです。',
   },
   {
-    id: 'minio',
-    displayName: 'MinIO',
+    id: 'object-storage',
+    displayName: 'オブジェクトストレージ (SeaweedFS)',
     kind: 'storage',
-    description: '生ストリームやメディア、BIDSエクスポートを保管するS3互換オブジェクトストレージです。',
+    description: '生ストリームやメディア、BIDSエクスポートを保管する S3 互換の SeaweedFS バックエンドです。',
   },
 ]
 
@@ -290,10 +290,10 @@ export const graphEdges: EdgeDefinition[] = [
     kind: 'database',
   },
   {
-    id: 'processor-to-minio',
+    id: 'processor-to-object-storage',
     from: 'processor',
-    to: 'minio',
-    description: `デコードしたペイロード断片をMinIOバケット ${config.MINIO_RAW_DATA_BUCKET} にアップロードします。`,
+    to: 'object-storage',
+    description: `デコードしたペイロード断片をオブジェクトストレージバケット ${config.OBJECT_STORAGE_RAW_DATA_BUCKET} にアップロードします。`,
     kind: 'storage',
   },
   {
@@ -343,10 +343,10 @@ export const graphEdges: EdgeDefinition[] = [
     kind: 'database',
   },
   {
-    id: 'event-corrector-to-minio',
+    id: 'event-corrector-to-object-storage',
     from: 'event_corrector',
-    to: 'minio',
-    description: `整列済みの生データ断片をMinIOバケット ${config.MINIO_RAW_DATA_BUCKET} に保存します。`,
+    to: 'object-storage',
+    description: `整列済みの生データ断片をオブジェクトストレージバケット ${config.OBJECT_STORAGE_RAW_DATA_BUCKET} に保存します。`,
     kind: 'storage',
   },
   {
@@ -366,17 +366,17 @@ export const graphEdges: EdgeDefinition[] = [
     queueName: config.STIMULUS_ASSET_QUEUE,
   },
   {
-    id: 'stimulus-processor-to-minio',
+    id: 'stimulus-processor-to-object-storage',
     from: 'stimulus_asset_processor',
-    to: 'minio',
-    description: `処理済み刺激アセットをMinIOバケット ${config.MINIO_MEDIA_BUCKET} にアップロードします。`,
+    to: 'object-storage',
+    description: `処理済み刺激アセットをオブジェクトストレージバケット ${config.OBJECT_STORAGE_MEDIA_BUCKET} にアップロードします。`,
     kind: 'storage',
   },
   {
-    id: 'media-processor-to-minio',
+    id: 'media-processor-to-object-storage',
     from: 'media_processor',
-    to: 'minio',
-    description: `正規化したメディアクリップをMinIOバケット ${config.MINIO_MEDIA_BUCKET} に保存します。`,
+    to: 'object-storage',
+    description: `正規化したメディアクリップをオブジェクトストレージバケット ${config.OBJECT_STORAGE_MEDIA_BUCKET} に保存します。`,
     kind: 'storage',
   },
   {
@@ -401,10 +401,10 @@ export const graphEdges: EdgeDefinition[] = [
     kind: 'database',
   },
   {
-    id: 'bids-exporter-to-minio',
+    id: 'bids-exporter-to-object-storage',
     from: 'bids_exporter',
-    to: 'minio',
-    description: `生成したBIDSアーカイブをMinIOバケット ${config.MINIO_BIDS_EXPORTS_BUCKET} に保存します。`,
+    to: 'object-storage',
+    description: `生成したBIDSアーカイブをオブジェクトストレージバケット ${config.OBJECT_STORAGE_BIDS_EXPORTS_BUCKET} に保存します。`,
     kind: 'storage',
   },
   {

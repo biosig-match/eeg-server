@@ -1,8 +1,8 @@
-import { Client as MinioClient } from 'minio'
+import { Client as S3CompatibleClient } from 'minio'
 
 import { config } from '../../config/env'
 
-export interface MinioObjectPreview {
+export interface ObjectStorageObjectPreview {
   name: string
   size: number
   lastModified: string | null
@@ -12,32 +12,42 @@ export interface MinioObjectPreview {
 export interface BucketPreview {
   name: string
   createdAt?: string
-  objectSample: MinioObjectPreview[]
+  objectSample: ObjectStorageObjectPreview[]
 }
 
-export interface MinioHealth {
+export interface ObjectStorageHealth {
   healthy: boolean
   checkedAt: string
   buckets: BucketPreview[]
   error?: string
 }
 
-export const minioClient = new MinioClient({
-  endPoint: config.MINIO_ENDPOINT,
-  port: config.MINIO_PORT,
-  accessKey: config.MINIO_ACCESS_KEY,
-  secretKey: config.MINIO_SECRET_KEY,
-  useSSL: config.MINIO_USE_SSL,
+const objectStorageClient = new S3CompatibleClient({
+  endPoint: config.OBJECT_STORAGE_ENDPOINT,
+  port: config.OBJECT_STORAGE_PORT,
+  useSSL: config.OBJECT_STORAGE_USE_SSL,
+  accessKey: config.OBJECT_STORAGE_ACCESS_KEY,
+  secretKey: config.OBJECT_STORAGE_SECRET_KEY,
 })
 
-export async function checkMinioHealth(maxObjectsPerBucket = 20): Promise<MinioHealth> {
+function createListObjectsStream(bucketName: string, prefix = '', recursive = false) {
+  return objectStorageClient.listObjectsV2(bucketName, prefix, recursive)
+}
+
+export { objectStorageClient }
+
+export async function checkObjectStorageHealth(
+  maxObjectsPerBucket = 20,
+): Promise<ObjectStorageHealth> {
   const checkedAt = new Date().toISOString()
   try {
-    console.info('[observability] Listing MinIO buckets')
-    const buckets = await minioClient.listBuckets()
+    console.info('[observability] Listing object storage buckets')
+    const buckets = await objectStorageClient.listBuckets()
     const previews: BucketPreview[] = []
     for (const bucket of buckets) {
-      console.info(`[observability] Sampling up to ${maxObjectsPerBucket} objects from bucket ${bucket.name}`)
+      console.info(
+        `[observability] Sampling up to ${maxObjectsPerBucket} objects from bucket ${bucket.name}`,
+      )
       const objectSample = await listObjectsPreviewWithRetry(bucket.name, maxObjectsPerBucket)
       previews.push({
         name: bucket.name,
@@ -45,7 +55,7 @@ export async function checkMinioHealth(maxObjectsPerBucket = 20): Promise<MinioH
         objectSample,
       })
     }
-    console.info(`[observability] MinIO responded with ${previews.length} buckets`)
+    console.info(`[observability] Object storage responded with ${previews.length} buckets`)
     return {
       healthy: true,
       checkedAt,
@@ -53,21 +63,24 @@ export async function checkMinioHealth(maxObjectsPerBucket = 20): Promise<MinioH
     }
   } catch (error) {
     console.error(
-      `[observability] MinIO health check failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+      `[observability] Object storage health check failed: ${error instanceof Error ? error.message : 'unknown error'}`,
     )
     return {
       healthy: false,
       checkedAt,
       buckets: [],
-      error: error instanceof Error ? error.message : 'Unknown MinIO error',
+      error: error instanceof Error ? error.message : 'Unknown object storage error',
     }
   }
 }
 
-export async function listObjectsPreview(bucketName: string, limit: number): Promise<MinioObjectPreview[]> {
+export async function listObjectsPreview(
+  bucketName: string,
+  limit: number,
+): Promise<ObjectStorageObjectPreview[]> {
   return new Promise((resolve, reject) => {
-    const results: MinioObjectPreview[] = []
-    const stream = minioClient.listObjectsV2(bucketName, '', false)
+    const results: ObjectStorageObjectPreview[] = []
+    const stream = objectStorageClient.listObjectsV2(bucketName, '', false)
 
     const TIMEOUT_MS = 5000
     let settled = false
@@ -118,13 +131,20 @@ export async function listObjectsPreview(bucketName: string, limit: number): Pro
     stream.on('end', finalize)
     stream.on('close', finalize)
     stream.on('error', (err) => {
-      console.error(`[observability] MinIO listObjectsV2 error for bucket ${bucketName}:`, err)
+      console.error(
+        `[observability] Object storage listObjectsV2 error for bucket ${bucketName}:`,
+        err,
+      )
       fail(err)
     })
   })
 }
 
-async function listObjectsPreviewWithRetry(bucketName: string, limit: number, maxRetries = 3): Promise<MinioObjectPreview[]> {
+async function listObjectsPreviewWithRetry(
+  bucketName: string,
+  limit: number,
+  maxRetries = 3,
+): Promise<ObjectStorageObjectPreview[]> {
   let lastError: Error | undefined
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
