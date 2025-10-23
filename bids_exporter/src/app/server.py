@@ -17,7 +17,11 @@ from .schemas import (
 )
 from ..domain.bids import create_bids_dataset
 from ..domain.tasks import create_task_in_db, get_task_status
-from ..infrastructure.minio import BIDS_BUCKET, check_minio_connection, minio_client
+from ..infrastructure.object_storage import (
+    BIDS_BUCKET,
+    check_object_storage_connection,
+    object_storage_client,
+)
 
 EXPORT_OUTPUT_DIR = Path(settings.export_output_dir)
 
@@ -26,25 +30,25 @@ app = FastAPI(title="BIDS Exporter Service")
 
 @app.on_event("startup")
 async def startup_event():
-    """On startup, check the connection to MinIO and ensure the bucket exists."""
+    """On startup, check the connection to the object storage and ensure the bucket exists."""
     try:
-        await check_minio_connection()
+        await check_object_storage_connection()
         EXPORT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        print(f"FATAL: Could not connect to MinIO on startup. {e}")
-        # In a real-world scenario, you might want to exit if MinIO is unavailable.
+        print(f"FATAL: Could not connect to object storage on startup. {e}")
+        # In a real-world scenario, you might want to exit if the object storage is unavailable.
         # os._exit(1)
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check(response: Response):
     """A simple endpoint to confirm the service is running for health checks."""
     try:
-        # MinIO接続チェック
+        # オブジェクトストレージ接続チェック
         loop = asyncio.get_event_loop()
-        minio_ok = await loop.run_in_executor(
-            None, lambda: minio_client.bucket_exists(BIDS_BUCKET)
+        storage_ok = await loop.run_in_executor(
+            None, lambda: object_storage_client.bucket_exists(BIDS_BUCKET)
         )
-        if not minio_ok:
+        if not storage_ok:
             response.status_code = 503
             return HealthResponse(status="unhealthy")
         return HealthResponse(status="ok")
@@ -92,7 +96,7 @@ def get_export_status(task_id: UUID):
 @app.get("/api/v1/export-tasks/{task_id}/download")
 def download_export(task_id: UUID):
     """
-    Downloads the completed BIDS dataset by streaming it from MinIO
+    Downloads the completed BIDS dataset by streaming it from the object storage
     through this service.
     """
     task = get_task_status(task_id)
@@ -110,11 +114,11 @@ def download_export(task_id: UUID):
             'Content-Disposition': f'attachment; filename="{os.path.basename(task.result_file_path)}"'
         }
         
-        # Generator function to stream the file from MinIO
-        def stream_minio_object(bucket: str, object_name: str):
+        # Generator function to stream the file from the object storage
+        def stream_object_storage_object(bucket: str, object_name: str):
             response = None
             try:
-                response = minio_client.get_object(bucket, object_name)
+                response = object_storage_client.get_object(bucket, object_name)
                 yield from response.stream(32 * 1024)
             finally:
                 if response:
@@ -122,7 +126,7 @@ def download_export(task_id: UUID):
                     response.release_conn()
 
         return StreamingResponse(
-            stream_minio_object(BIDS_BUCKET, os.path.basename(task.result_file_path)),
+            stream_object_storage_object(BIDS_BUCKET, os.path.basename(task.result_file_path)),
             media_type="application/zip",
             headers=headers
         )

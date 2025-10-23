@@ -33,7 +33,7 @@ export function buildDashboardBody(effectiveRefreshSeconds: number): string {
         <div class="panel-header">
           <div>
             <h2>システムステータス</h2>
-            <p class="panel-subtitle">RabbitMQ・PostgreSQL・MinIO・各サービスの稼働状況を俯瞰</p>
+            <p class="panel-subtitle">RabbitMQ・PostgreSQL・オブジェクトストレージ・各サービスの稼働状況を俯瞰</p>
           </div>
         </div>
         <div class="metrics-grid" id="system-overview">
@@ -47,10 +47,10 @@ export function buildDashboardBody(effectiveRefreshSeconds: number): string {
             <div class="metric-value" id="postgres-status">同期中…</div>
             <div class="metric-meta" id="postgres-meta">バージョンおよび応答時間を取得しています</div>
           </div>
-          <div class="metric-card" data-kind="minio">
-            <h4>MinIO</h4>
-            <div class="metric-value" id="minio-status">同期中…</div>
-            <div class="metric-meta" id="minio-meta">バケット状況を取得しています</div>
+          <div class="metric-card" data-kind="object-storage">
+            <h4>オブジェクトストレージ</h4>
+            <div class="metric-value" id="object-storage-status">同期中…</div>
+            <div class="metric-meta" id="object-storage-meta">バケット状況を取得しています</div>
           </div>
         </div>
         <div>
@@ -84,7 +84,7 @@ export function buildDashboardBody(effectiveRefreshSeconds: number): string {
             <p class="muted" id="tasks-summary"></p>
           </div>
           <div class="card">
-            <h3>MinIO バケット概況</h3>
+            <h3>オブジェクトストレージ バケット概況</h3>
             <div class="storage-grid" id="storage-grid">
               <p class="muted">同期中…</p>
             </div>

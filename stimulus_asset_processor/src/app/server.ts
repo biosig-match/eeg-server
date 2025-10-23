@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { HTTPException } from 'hono/http-exception'
 import { dbPool } from '../infrastructure/db'
-import { ensureMinioBucket, minioClient } from '../infrastructure/minio'
+import { ensureObjectStorageBucket, objectStorageClient } from '../infrastructure/objectStorage'
 import {
   startConsumer,
   isChannelReady,
@@ -12,6 +12,7 @@ import {
 } from '../infrastructure/queue'
 import { stimulusAssetJobPayloadSchema } from './schemas/job'
 import { config } from '../config/env'
+import { describeStorageError } from '../../../shared/objectStorage'
 
 const app = new Hono()
 
@@ -27,11 +28,16 @@ app.get('/health', async (c) => {
     console.error('❌ [StimulusAssetProcessor] DB health check failed:', error);
     return false;
   });
-  const minioConnected = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET).then(() => true).catch((error) => {
-    console.error('❌ [StimulusAssetProcessor] MinIO health check failed:', error);
-    return false;
-  });
-  const allOk = rabbitConnected && dbConnected && minioConnected;
+  const storageConnected = await objectStorageClient
+    .bucketExists(config.OBJECT_STORAGE_MEDIA_BUCKET)
+    .then(() => true)
+    .catch((error) => {
+      const reason = describeStorageError(error)
+      const log = reason === 'ECONNREFUSED' ? console.warn : console.error
+      log(`❌ [StimulusAssetProcessor] object storage health check failed: ${reason}`);
+      return false;
+    });
+  const allOk = rabbitConnected && dbConnected && storageConnected;
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },
     allOk ? 200 : 503,
@@ -47,25 +53,27 @@ app.get('/api/v1/health', async (c) => {
       console.error('❌ [StimulusAssetProcessor] DB health check failed:', error);
       return false;
     });
-  const minioConnected = await minioClient
-    .bucketExists(config.MINIO_MEDIA_BUCKET)
+  const storageConnected = await objectStorageClient
+    .bucketExists(config.OBJECT_STORAGE_MEDIA_BUCKET)
     .then(() => true)
     .catch((error) => {
-      console.error('❌ [StimulusAssetProcessor] MinIO health check failed:', error);
+      const reason = describeStorageError(error)
+      const log = reason === 'ECONNREFUSED' ? console.warn : console.error
+      log(`❌ [StimulusAssetProcessor] object storage health check failed: ${reason}`);
       return false;
     });
 
   return c.json(
     {
-      status: rabbitConnected && dbConnected && minioConnected ? 'ok' : 'degraded',
+      status: rabbitConnected && dbConnected && storageConnected ? 'ok' : 'degraded',
       rabbitmq_connected: rabbitConnected,
       db_connected: dbConnected,
-      minio_connected: minioConnected,
+      object_storage_connected: storageConnected,
       queue: config.STIMULUS_ASSET_QUEUE,
       last_rabbit_connected_at: lastRabbitConnection()?.toISOString() ?? null,
       timestamp: new Date().toISOString(),
     },
-    rabbitConnected && dbConnected && minioConnected ? 200 : 503,
+    rabbitConnected && dbConnected && storageConnected ? 200 : 503,
   );
 });
 
@@ -119,7 +127,7 @@ export async function startStimulusAssetProcessorService() {
 
 async function bootstrap() {
   try {
-    await ensureMinioBucket();
+    await ensureObjectStorageBucket();
     await startConsumer();
   } catch (error) {
     console.error('❌ Stimulus Asset Processor bootstrap failed:', error)

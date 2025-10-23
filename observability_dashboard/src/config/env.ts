@@ -18,17 +18,17 @@ const envSchema = z.object({
   DATA_LINKER_QUEUE: z.string().default('data_linker_queue'),
   EVENT_CORRECTION_QUEUE: z.string().default('event_correction_queue'),
   STIMULUS_ASSET_QUEUE: z.string().default('stimulus_asset_queue'),
-  MINIO_ENDPOINT: z.string().default('minio'),
-  MINIO_PORT: z.coerce.number().default(9000),
-  MINIO_ACCESS_KEY: z.string(),
-  MINIO_SECRET_KEY: z.string(),
-  MINIO_USE_SSL: z
-    .string()
+  OBJECT_STORAGE_ENDPOINT: z.string().default('object-storage'),
+  OBJECT_STORAGE_PORT: z.coerce.number().default(8333),
+  OBJECT_STORAGE_ACCESS_KEY: z.string(),
+  OBJECT_STORAGE_SECRET_KEY: z.string(),
+  OBJECT_STORAGE_USE_SSL: z
+    .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
-  MINIO_RAW_DATA_BUCKET: z.string().default('raw-data'),
-  MINIO_MEDIA_BUCKET: z.string().default('media'),
-  MINIO_BIDS_EXPORTS_BUCKET: z.string().default('bids-exports'),
+  OBJECT_STORAGE_RAW_DATA_BUCKET: z.string().default('raw-data'),
+  OBJECT_STORAGE_MEDIA_BUCKET: z.string().default('media'),
+  OBJECT_STORAGE_BIDS_EXPORTS_BUCKET: z.string().default('bids-exports'),
   SERVICE_TIMEOUT_MS: z.coerce.number().default(2000),
   DASHBOARD_REFRESH_INTERVAL_MS: z.coerce.number().default(4000),
   OBSERVABILITY_BASIC_USER: z.string(),
@@ -52,14 +52,14 @@ const parsedEnv = envSchema.safeParse({
   DATA_LINKER_QUEUE: rawEnv.DATA_LINKER_QUEUE,
   EVENT_CORRECTION_QUEUE: rawEnv.EVENT_CORRECTION_QUEUE,
   STIMULUS_ASSET_QUEUE: rawEnv.STIMULUS_ASSET_QUEUE,
-  MINIO_ENDPOINT: rawEnv.MINIO_ENDPOINT,
-  MINIO_PORT: rawEnv.MINIO_PORT,
-  MINIO_ACCESS_KEY: rawEnv.MINIO_ACCESS_KEY,
-  MINIO_SECRET_KEY: rawEnv.MINIO_SECRET_KEY,
-  MINIO_USE_SSL: rawEnv.MINIO_USE_SSL,
-  MINIO_RAW_DATA_BUCKET: rawEnv.MINIO_RAW_DATA_BUCKET,
-  MINIO_MEDIA_BUCKET: rawEnv.MINIO_MEDIA_BUCKET,
-  MINIO_BIDS_EXPORTS_BUCKET: rawEnv.MINIO_BIDS_EXPORTS_BUCKET,
+  OBJECT_STORAGE_ENDPOINT: rawEnv.OBJECT_STORAGE_ENDPOINT,
+  OBJECT_STORAGE_PORT: rawEnv.OBJECT_STORAGE_PORT,
+  OBJECT_STORAGE_ACCESS_KEY: rawEnv.OBJECT_STORAGE_ACCESS_KEY,
+  OBJECT_STORAGE_SECRET_KEY: rawEnv.OBJECT_STORAGE_SECRET_KEY,
+  OBJECT_STORAGE_USE_SSL: rawEnv.OBJECT_STORAGE_USE_SSL,
+  OBJECT_STORAGE_RAW_DATA_BUCKET: rawEnv.OBJECT_STORAGE_RAW_DATA_BUCKET,
+  OBJECT_STORAGE_MEDIA_BUCKET: rawEnv.OBJECT_STORAGE_MEDIA_BUCKET,
+  OBJECT_STORAGE_BIDS_EXPORTS_BUCKET: rawEnv.OBJECT_STORAGE_BIDS_EXPORTS_BUCKET,
   SERVICE_TIMEOUT_MS: rawEnv.SERVICE_TIMEOUT_MS,
   DASHBOARD_REFRESH_INTERVAL_MS: rawEnv.DASHBOARD_REFRESH_INTERVAL_MS,
   OBSERVABILITY_BASIC_USER: rawEnv.OBSERVABILITY_BASIC_USER,
@@ -71,7 +71,7 @@ if (!parsedEnv.success) {
   const sensitiveFields = new Set([
     'POSTGRES_PASSWORD',
     'RABBITMQ_PASSWORD',
-    'MINIO_SECRET_KEY',
+    'OBJECT_STORAGE_SECRET_KEY',
     'OBSERVABILITY_BASIC_PASSWORD',
   ])
   const fieldErrors = parsedEnv.error.flatten().fieldErrors

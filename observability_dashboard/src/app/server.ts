@@ -15,7 +15,7 @@ import {
   pgPool,
   readTableSample,
 } from './services/database'
-import { checkMinioHealth } from './services/storage'
+import { checkObjectStorageHealth } from './services/storage'
 import { readRabbitStatus } from './services/rabbitmq'
 import { buildDashboardHtml } from './ui/dashboard'
 
@@ -77,18 +77,25 @@ app.use('*', async (c, next) => {
 
 app.get('/health', async (c) => {
   const done = startRequestLog('GET', '/health')
-  const [rabbit, db, minio] = await Promise.all([readRabbitStatus(), pgHealth(), checkMinioHealth(3)])
-  const healthy = rabbit.healthy && db.healthy && minio.healthy
-  done(healthy ? 200 : 503, `rabbit=${rabbit.healthy} db=${db.healthy} minio=${minio.healthy}`)
+  const [rabbit, db, objectStorage] = await Promise.all([
+    readRabbitStatus(),
+    pgHealth(),
+    checkObjectStorageHealth(3),
+  ])
+  const healthy = rabbit.healthy && db.healthy && objectStorage.healthy
+  done(
+    healthy ? 200 : 503,
+    `rabbit=${rabbit.healthy} db=${db.healthy} objectStorage=${objectStorage.healthy}`,
+  )
   return c.json(
     {
       status: healthy ? 'ok' : 'degraded',
       rabbitmq: rabbit,
       postgres: db,
-      minio: {
-        healthy: minio.healthy,
-        error: minio.error,
-        checkedAt: minio.checkedAt,
+      objectStorage: {
+        healthy: objectStorage.healthy,
+        error: objectStorage.error,
+        checkedAt: objectStorage.checkedAt,
       },
       timestamp: new Date().toISOString(),
     },
@@ -123,7 +130,7 @@ app.get('/api/v1/graph', async (c) => {
       edges: [],
       rabbit: { healthy: false, error: message, checkedAt: now },
       postgres: { healthy: false, error: message, checkedAt: now },
-      minio: { healthy: false, error: message, checkedAt: now, buckets: [] },
+      objectStorage: { healthy: false, error: message, checkedAt: now, buckets: [] },
     })
   }
 })
@@ -222,12 +229,12 @@ app.get('/api/v1/tasks', zValidator('query', limitQuerySchema), async (c) => {
 app.get('/api/v1/storage/buckets', async (c) => {
   const done = startRequestLog('GET', '/api/v1/storage/buckets')
   try {
-    const overview = await checkMinioHealth(50)
+    const overview = await checkObjectStorageHealth(50)
     done(200, `buckets=${overview.buckets.length}`)
     return c.json(overview)
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to query MinIO'
-    console.error('❌ Failed to query MinIO buckets:', error)
+    const message = error instanceof Error ? error.message : 'Failed to query object storage'
+    console.error('❌ Failed to query object storage buckets:', error)
     const now = new Date().toISOString()
     done(200, `error=${message}`)
     return c.json({

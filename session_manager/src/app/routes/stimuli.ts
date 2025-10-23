@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { dbPool } from '../../infrastructure/db';
-import { minioClient } from '../../infrastructure/minio';
+import { objectStorageClient } from '../../infrastructure/objectStorage';
 import { requireAuth, requireUser } from '../middleware/auth';
 import { config } from '../../config/env';
 import { resolveStimulusMime } from '../../shared/utils/mime';
@@ -30,7 +30,10 @@ stimuliRouter.get('/calibration/download/:filename', requireUser(), async (c) =>
     }
 
     const { object_id, type } = calibrationResult.rows[0];
-    const objectStream = await minioClient.getObject(config.MINIO_MEDIA_BUCKET, object_id);
+    const objectStream = await objectStorageClient.getObject(
+      config.OBJECT_STORAGE_MEDIA_BUCKET,
+      object_id,
+    );
 
     c.header('Content-Type', resolveStimulusMime(filename, type));
     c.header('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`);
@@ -74,7 +77,10 @@ stimuliRouter.get('/:experiment_id/download/:filename', requireAuth('participant
 
     const { object_id, type } = stimuliResult.rows[0];
 
-    const objectStream = await minioClient.getObject(config.MINIO_MEDIA_BUCKET, object_id);
+    const objectStream = await objectStorageClient.getObject(
+      config.OBJECT_STORAGE_MEDIA_BUCKET,
+      object_id,
+    );
 
     c.header('Content-Type', resolveStimulusMime(filename, type));
     c.header('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`);

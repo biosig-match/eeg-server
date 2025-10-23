@@ -3,7 +3,7 @@ services:
     ports: []
   rabbitmq:
     ports: []
-  minio:
+  object-storage:
     ports: []
   erp_neuro_marketing:
     ports: []

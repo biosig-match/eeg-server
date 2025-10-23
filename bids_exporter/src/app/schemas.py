@@ -14,7 +14,9 @@ class TaskStatus(BaseModel):
     progress: int = Field(..., ge=0, le=100, description="Task completion percentage")
     created_at: datetime
     updated_at: datetime
-    result_file_path: str | None = Field(None, description="Path to the final ZIP file in MinIO")
+    result_file_path: str | None = Field(
+        None, description="Path to the final ZIP file in the object storage"
+    )
     error_message: str | None = None
     
     class Config:

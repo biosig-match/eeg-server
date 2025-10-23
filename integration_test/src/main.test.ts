@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import fs from 'fs/promises'
 import path from 'path'
 import { Pool } from 'pg'
-import * as Minio from 'minio'
+import { Client as S3CompatibleClient } from 'minio'
 import { compress, init as initZstd } from '@bokuweb/zstd-wasm'
 import JSZip from 'jszip'
 import { Buffer } from 'buffer'
@@ -11,8 +11,8 @@ import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_correcto
 
 const baseUrlFromEnv =
   process.env.TEST_BASE_URL ??
-  (process.env.NGINX_PORT ? `http://localhost:${process.env.NGINX_PORT}/api/v1` : undefined);
-const BASE_URL = baseUrlFromEnv ?? 'http://localhost:8080/api/v1';
+  (process.env.NGINX_PORT ? `http://localhost:${process.env.NGINX_PORT}/api/v1` : undefined)
+const BASE_URL = baseUrlFromEnv ?? 'http://localhost:8080/api/v1'
 
 const databaseUrlFromEnv =
   process.env.TEST_DATABASE_URL ??
@@ -22,25 +22,72 @@ const databaseUrlFromEnv =
   process.env.POSTGRES_PORT &&
   process.env.POSTGRES_DB
     ? `postgres://${process.env.POSTGRES_USER}:${process.env.POSTGRES_PASSWORD}@${process.env.POSTGRES_HOST}:${process.env.POSTGRES_PORT}/${process.env.POSTGRES_DB}`
-    : undefined);
-const DATABASE_URL = databaseUrlFromEnv ?? 'postgres://admin:password@localhost:5432/eeg_data';
+    : undefined)
+const DATABASE_URL = databaseUrlFromEnv ?? 'postgres://admin:password@localhost:5432/eeg_data'
 
-const rawMinioEndpoint =
-  process.env.TEST_MINIO_ENDPOINT ?? process.env.MINIO_ENDPOINT ?? 'localhost';
-const [minioEndpointHost, minioEndpointPort] = rawMinioEndpoint.split(':');
-const resolvedMinioPort =
-  process.env.TEST_MINIO_PORT ?? process.env.MINIO_PORT ?? (minioEndpointPort || undefined);
-const parsedMinioPort = resolvedMinioPort ? Number(resolvedMinioPort) : NaN;
-const MINIO_CONFIG = {
-  endPoint: minioEndpointHost,
-  port: Number.isFinite(parsedMinioPort) ? parsedMinioPort : 9000,
-  useSSL: (process.env.TEST_MINIO_USE_SSL ?? process.env.MINIO_USE_SSL ?? 'false') === 'true',
-  accessKey: process.env.TEST_MINIO_ACCESS_KEY ?? process.env.MINIO_ACCESS_KEY ?? 'minioadmin',
-  secretKey: process.env.TEST_MINIO_SECRET_KEY ?? process.env.MINIO_SECRET_KEY ?? 'minioadmin',
-};
-const MINIO_RAW_DATA_BUCKET = 'raw-data';
-const MINIO_MEDIA_BUCKET = 'media';
-const BIDS_BUCKET = 'bids-exports';
+const rawObjectStorageEndpoint =
+  process.env.TEST_OBJECT_STORAGE_ENDPOINT ??
+  process.env.OBJECT_STORAGE_ENDPOINT ??
+  'localhost'
+const [objectStorageEndpointHost, objectStorageEndpointPort] = rawObjectStorageEndpoint.split(':')
+const resolvedObjectStoragePort =
+  process.env.TEST_OBJECT_STORAGE_PORT ??
+  process.env.OBJECT_STORAGE_PORT ??
+  (objectStorageEndpointPort || undefined)
+const parsedObjectStoragePort = resolvedObjectStoragePort ? Number(resolvedObjectStoragePort) : NaN
+const OBJECT_STORAGE_CONFIG = {
+  endPoint: objectStorageEndpointHost,
+  port: Number.isFinite(parsedObjectStoragePort) ? parsedObjectStoragePort : 8333,
+  useSSL:
+    (process.env.TEST_OBJECT_STORAGE_USE_SSL ??
+      process.env.OBJECT_STORAGE_USE_SSL ??
+      'false') === 'true',
+  accessKey:
+    process.env.TEST_OBJECT_STORAGE_ACCESS_KEY ??
+    process.env.OBJECT_STORAGE_ACCESS_KEY ??
+    'storageadmin',
+  secretKey:
+    process.env.TEST_OBJECT_STORAGE_SECRET_KEY ??
+    process.env.OBJECT_STORAGE_SECRET_KEY ??
+    'storageadmin',
+}
+const OBJECT_STORAGE_RAW_DATA_BUCKET =
+  process.env.TEST_OBJECT_STORAGE_RAW_DATA_BUCKET ??
+  process.env.OBJECT_STORAGE_RAW_DATA_BUCKET ??
+  'raw-data'
+const OBJECT_STORAGE_MEDIA_BUCKET =
+  process.env.TEST_OBJECT_STORAGE_MEDIA_BUCKET ??
+  process.env.OBJECT_STORAGE_MEDIA_BUCKET ??
+  'media'
+const BIDS_BUCKET =
+  process.env.TEST_OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
+  process.env.OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
+  'bids-exports'
+
+function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
+  const client = new S3CompatibleClient({
+    endPoint: config.endPoint,
+    port: config.port,
+    useSSL: config.useSSL,
+    accessKey: config.accessKey,
+    secretKey: config.secretKey,
+  })
+
+  return {
+    async fPutObject(
+      bucketName: string,
+      objectId: string,
+      filePath: string,
+      metadata: Record<string, string> = {},
+    ): Promise<void> {
+      const exists = await client.bucketExists(bucketName).catch(() => false)
+      if (!exists) {
+        await client.makeBucket(bucketName)
+      }
+      await client.fPutObject(bucketName, objectId, filePath, metadata)
+    },
+  }
+}
 
 const ASSETS_DIR = path.resolve(__dirname, '../assets')
 const TEST_OUTPUT_DIR = path.resolve(__dirname, '../test-output')
@@ -283,7 +330,9 @@ interface ScenarioConfig {
 }
 
 let dbPool: Pool
-let minioClient: Minio.Client
+type ObjectStorageTestClient = ReturnType<typeof createObjectStorageTestClient>
+
+let objectStorageClient: ObjectStorageTestClient
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -492,7 +541,7 @@ async function seedCalibrationAssets() {
     { f: 'house01.png', t: 'nontarget' },
   ]) {
     const objectId = `stimuli/calibration/${asset.f}`
-    await minioClient.fPutObject(MINIO_MEDIA_BUCKET, objectId, path.join(ASSETS_DIR, asset.f))
+    await objectStorageClient.fPutObject(OBJECT_STORAGE_MEDIA_BUCKET, objectId, path.join(ASSETS_DIR, asset.f))
     await dbPool.query(
       'INSERT INTO calibration_items (file_name, item_type, object_id) VALUES ($1, $2, $3)',
       [asset.f, asset.t, objectId],
@@ -861,7 +910,7 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
 beforeAll(async () => {
   await initZstd()
   dbPool = new Pool({ connectionString: DATABASE_URL })
-  minioClient = new Minio.Client(MINIO_CONFIG)
+  objectStorageClient = createObjectStorageTestClient(OBJECT_STORAGE_CONFIG)
   await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
 })
 

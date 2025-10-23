@@ -1,5 +1,5 @@
 import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
-import { Client as MinioClient } from 'minio'
+import { Client as S3CompatibleClient } from 'minio'
 import { Pool } from 'pg'
 import path from 'path'
 import { Hono } from 'hono'
@@ -8,6 +8,11 @@ import { zValidator } from '@hono/zod-validator'
 import { HTTPException } from 'hono/http-exception'
 
 import { config } from '../config/env'
+import {
+  describeStorageError,
+  ensureBucketExists,
+  waitForObjectStorageConnection,
+} from '../../../shared/objectStorage'
 
 const PREFETCH_COUNT = config.MEDIA_PREFETCH
 
@@ -19,12 +24,13 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let lastRabbitConnectedAt: Date | null = null
 
 const pgPool = new Pool({ connectionString: config.DATABASE_URL })
-const minioClient = new MinioClient({
-  endPoint: config.MINIO_ENDPOINT,
-  port: config.MINIO_PORT,
-  useSSL: config.MINIO_USE_SSL,
-  accessKey: config.MINIO_ACCESS_KEY,
-  secretKey: config.MINIO_SECRET_KEY,
+
+const objectStorageClient = new S3CompatibleClient({
+  endPoint: config.OBJECT_STORAGE_ENDPOINT,
+  port: config.OBJECT_STORAGE_PORT,
+  useSSL: config.OBJECT_STORAGE_USE_SSL,
+  accessKey: config.OBJECT_STORAGE_ACCESS_KEY,
+  secretKey: config.OBJECT_STORAGE_SECRET_KEY,
 })
 
 const app = new Hono()
@@ -41,11 +47,16 @@ app.get('/health', async (c) => {
     console.error('❌ [MediaProcessor] DB health check failed:', error)
     return false
   })
-  const minioStatus = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET).then(() => true).catch((error) => {
-    console.error('❌ [MediaProcessor] MinIO health check failed:', error)
-    return false
-  })
-  const allOk = rabbitStatus && dbStatus && minioStatus
+  const storageStatus = await objectStorageClient
+    .bucketExists(config.OBJECT_STORAGE_MEDIA_BUCKET)
+    .then(() => true)
+    .catch((error) => {
+      const reason = describeStorageError(error)
+      const log = reason === 'ECONNREFUSED' ? console.warn : console.error
+      log(`❌ [MediaProcessor] object storage health check failed: ${reason}`)
+      return false
+    })
+  const allOk = rabbitStatus && dbStatus && storageStatus
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },
     allOk ? 200 : 503,
@@ -90,24 +101,26 @@ app.get('/api/v1/health', async (c) => {
       console.error('❌ [MediaProcessor] DB health check failed:', error)
       return false
     })
-  const minioStatus = await minioClient
-    .bucketExists(config.MINIO_MEDIA_BUCKET)
+  const storageStatus = await objectStorageClient
+    .bucketExists(config.OBJECT_STORAGE_MEDIA_BUCKET)
     .then(() => true)
     .catch((error) => {
-      console.error('❌ [MediaProcessor] MinIO health check failed:', error)
+      const reason = describeStorageError(error)
+      const log = reason === 'ECONNREFUSED' ? console.warn : console.error
+      log(`❌ [MediaProcessor] object storage health check failed: ${reason}`)
       return false
     })
 
   return c.json(
     {
-      status: rabbitStatus && dbStatus && minioStatus ? 'ok' : 'degraded',
+      status: rabbitStatus && dbStatus && storageStatus ? 'ok' : 'degraded',
       rabbitmq_connected: rabbitStatus,
       db_connected: dbStatus,
-      minio_connected: minioStatus,
+      object_storage_connected: storageStatus,
       last_rabbit_connected_at: lastRabbitConnectedAt?.toISOString() ?? null,
       timestamp: new Date().toISOString(),
     },
-    rabbitStatus && dbStatus && minioStatus ? 200 : 503,
+    rabbitStatus && dbStatus && storageStatus ? 200 : 503,
   )
 })
 
@@ -188,7 +201,7 @@ async function reconnectRabbitMQ() {
 
 async function bootstrap() {
   try {
-    await ensureMinioBucket()
+    await ensureObjectStorageBucket()
     await connectRabbitMQ()
     await startConsumer()
   } catch (error) {
@@ -280,14 +293,14 @@ async function processMessage(msg: ConsumeMessage | null) {
       'X-Session-Id': metadata.session_id,
       'X-Original-Filename': metadata.original_filename,
     }
-    await minioClient.putObject(
-      config.MINIO_MEDIA_BUCKET,
+    await objectStorageClient.putObject(
+      config.OBJECT_STORAGE_MEDIA_BUCKET,
       objectId,
       fileBuffer,
       fileBuffer.length,
       metaData,
     )
-    console.log(`[MinIO] Successfully uploaded: ${objectId}`)
+    console.log(`[ObjectStorage] Successfully uploaded: ${objectId}`)
 
     if (mediaType === 'photo') {
       await pgPool.query(
@@ -323,32 +336,46 @@ async function processMessage(msg: ConsumeMessage | null) {
   }
 }
 
-async function ensureMinioBucket(maxAttempts = 5, baseDelayMs = 1_000) {
-  let attempt = 0
-  while (attempt < maxAttempts) {
-    attempt += 1
-    try {
-      const bucketExists = await minioClient.bucketExists(config.MINIO_MEDIA_BUCKET)
-      if (!bucketExists) {
-        console.log(`[MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" does not exist. Creating...`)
-        await minioClient.makeBucket(config.MINIO_MEDIA_BUCKET)
-        console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" created.`)
-      } else {
-        console.log(`✅ [MinIO] Bucket "${config.MINIO_MEDIA_BUCKET}" already exists.`)
+async function ensureObjectStorageBucket(maxAttempts = 5, baseDelayMs = 1_000) {
+  const connectionAttempts = Math.max(maxAttempts, 10)
+
+  await waitForObjectStorageConnection(objectStorageClient, {
+    maxAttempts: connectionAttempts,
+    baseDelayMs,
+    onRetry: ({ attempt, maxAttempts: max, error }) =>
+      console.warn(
+        `⏳ [ObjectStorage] Waiting for endpoint (attempt ${attempt}/${max}). reason=${describeStorageError(error)}`,
+      ),
+    onSuccess: ({ attempt }) => {
+      if (attempt > 1) {
+        console.log(`✅ [ObjectStorage] Connected on attempt ${attempt}.`)
       }
-      return
-    } catch (error) {
-      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), 10_000)
+    },
+    onFailure: ({ error }) =>
+      console.error('❌ [ObjectStorage] Failed to connect to object storage.', error),
+  })
+
+  await ensureBucketExists(objectStorageClient, config.OBJECT_STORAGE_MEDIA_BUCKET, {
+    maxAttempts,
+    baseDelayMs,
+    onCreateStart: () =>
+      console.warn(
+        `[ObjectStorage] Bucket "${config.OBJECT_STORAGE_MEDIA_BUCKET}" does not exist. Creating...`,
+      ),
+    onCreateSuccess: () =>
+      console.log(`✅ [ObjectStorage] Bucket "${config.OBJECT_STORAGE_MEDIA_BUCKET}" created.`),
+    onAlreadyExists: () =>
+      console.log(`✅ [ObjectStorage] Bucket "${config.OBJECT_STORAGE_MEDIA_BUCKET}" already exists.`),
+    onRetry: ({ attempt, maxAttempts: max, error }) =>
+      console.warn(
+        `⏳ [ObjectStorage] Bucket check will retry (attempt ${attempt}/${max}). reason=${describeStorageError(error)}`,
+      ),
+    onFailure: ({ attempt, maxAttempts: max, error }) =>
       console.error(
-        `❌ [MinIO] Bucket check failed (attempt ${attempt}/${maxAttempts}).`,
+        `❌ [ObjectStorage] Bucket check failed (attempt ${attempt}/${max}).`,
         error,
-      )
-      if (attempt >= maxAttempts) {
-        throw error
-      }
-      await new Promise((resolve) => setTimeout(resolve, delay))
-    }
-  }
+      ),
+  })
 }
 
 async function shutdown(signal: NodeJS.Signals) {

@@ -5,10 +5,9 @@ services:
   rabbitmq:
     ports:
       - '${RABBITMQ_MGMT_PORT:-15672}:15672'
-  minio:
+  object-storage:
     ports:
-      - '${MINIO_PORT:-9000}:9000'
-      - '${MINIO_CONSOLE_PORT:-9001}:9001'
+      - '${OBJECT_STORAGE_PORT:-8333}:${OBJECT_STORAGE_PORT:-8333}'
   erp_neuro_marketing:
     ports: []
   ingress:

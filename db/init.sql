@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS session_events (
     CONSTRAINT chk_event_stimulus_link CHECK (stimulus_id IS NULL OR calibration_item_id IS NULL)
 );
 
--- Table for metadata of raw data objects stored in MinIO
+-- Table for metadata of raw data objects stored in the object storage
 CREATE TABLE IF NOT EXISTS raw_data_objects (
     object_id VARCHAR(512) PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS session_object_links (
     PRIMARY KEY (session_id, object_id)
 );
 
--- Table for metadata of image files stored in MinIO
+-- Table for metadata of image files stored in the object storage
 CREATE TABLE IF NOT EXISTS images (
     object_id VARCHAR(512) PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS images (
     timestamp_utc TIMESTAMPTZ NOT NULL
 );
 
--- Table for metadata of audio clip files stored in MinIO
+-- Table for metadata of audio clip files stored in the object storage
 CREATE TABLE IF NOT EXISTS audio_clips (
     object_id VARCHAR(512) PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL,

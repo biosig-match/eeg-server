@@ -14,7 +14,12 @@ from mne_bids import BIDSPath, write_raw_bids
 
 from ..config.env import settings
 from ..infrastructure.db import get_db_connection, get_db_cursor
-from ..infrastructure.minio import minio_client, RAW_DATA_BUCKET, MEDIA_BUCKET, BIDS_BUCKET
+from ..infrastructure.object_storage import (
+    object_storage_client,
+    RAW_DATA_BUCKET,
+    MEDIA_BUCKET,
+    BIDS_BUCKET,
+)
 from .tasks import update_task_status
 
 
@@ -131,22 +136,22 @@ class ChannelQualityAccumulator:
 
 
 @contextmanager
-def _managed_minio_object(bucket: str, object_id: str):
+def _managed_object_storage_object(bucket: str, object_id: str):
     response = None
     try:
-        response = minio_client.get_object(bucket, object_id)
+        response = object_storage_client.get_object(bucket, object_id)
         yield response
     finally:
         if response is not None:
             try:
                 response.close()
             except Exception as close_error:  # pragma: no cover - defensive logging
-                print(f"Warning: Failed to close MinIO response for {object_id}: {close_error}")
+                print(f"Warning: Failed to close object storage response for {object_id}: {close_error}")
             try:
                 response.release_conn()
             except Exception as release_error:  # pragma: no cover - defensive logging
                 print(
-                    f"Warning: Failed to release MinIO connection for {object_id}: {release_error}"
+                    f"Warning: Failed to release object storage connection for {object_id}: {release_error}"
                 )
 def parse_payload(data: bytes) -> dict | None:
     """
@@ -285,7 +290,7 @@ def create_bids_dataset(
                 if stimuli:
                     for stim in stimuli:
                         stim_path = stimuli_dir / stim['file_name']
-                        minio_client.fget_object(MEDIA_BUCKET, stim['object_id'], str(stim_path))
+                        object_storage_client.fget_object(MEDIA_BUCKET, stim['object_id'], str(stim_path))
                     
                     stimuli_df = pd.DataFrame({'stim_file': [f"stimuli/{s['file_name']}" for s in stimuli]})
                     stimuli_df.to_csv(bids_root / 'stimuli.tsv', sep='\t', index=False)
@@ -327,7 +332,7 @@ def create_bids_dataset(
                     quality_accumulator: ChannelQualityAccumulator | None = None
                     
                     for obj in data_objects:
-                        with _managed_minio_object(RAW_DATA_BUCKET, obj['object_id']) as response:
+                        with _managed_object_storage_object(RAW_DATA_BUCKET, obj['object_id']) as response:
                             payload = response.read()
 
                             if not payload:
@@ -483,12 +488,12 @@ def create_bids_dataset(
             )
             
             object_name = os.path.basename(zip_path)
-            minio_client.fput_object(
+            object_storage_client.fput_object(
                 bucket_name=BIDS_BUCKET,
                 object_name=object_name,
                 file_path=zip_path,
             )
-            print(f"[Task: {task_id}] Uploaded BIDS archive to MinIO: {object_name}")
+            print(f"[Task: {task_id}] Uploaded BIDS archive to object storage: {object_name}")
 
             update_task_status(task_id, progress=100, status='completed', result_path=object_name)
             return zip_path

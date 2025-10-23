@@ -8,9 +8,10 @@ import {
   publishEventCorrectionJob,
   shutdownQueue,
 } from '../infrastructure/queue'
-import { ensureMinioBucket, minioClient } from '../infrastructure/minio'
+import { ensureObjectStorageBucket, objectStorageClient } from '../infrastructure/objectStorage'
 import { dbPool } from '../infrastructure/db'
 import { config } from '../config/env'
+import { describeStorageError } from '../../../shared/objectStorage'
 
 const app = new Hono()
 
@@ -26,11 +27,16 @@ app.get('/health', async (c) => {
     console.error('❌ [EventCorrector] DB health check failed:', error)
     return false
   })
-  const minioConnected = await minioClient.bucketExists(config.MINIO_RAW_DATA_BUCKET).then(() => true).catch((error) => {
-    console.error('❌ [EventCorrector] MinIO health check failed:', error)
-    return false
-  })
-  const allOk = rabbitConnected && dbConnected && minioConnected
+  const storageConnected = await objectStorageClient
+    .bucketExists(config.OBJECT_STORAGE_RAW_DATA_BUCKET)
+    .then(() => true)
+    .catch((error) => {
+      const reason = describeStorageError(error)
+      const log = reason === 'ECONNREFUSED' ? console.warn : console.error
+      log(`❌ [EventCorrector] object storage health check failed: ${reason}`)
+      return false
+    })
+  const allOk = rabbitConnected && dbConnected && storageConnected
   return c.json(
     { status: allOk ? 'ok' : 'unhealthy' },
     allOk ? 200 : 503,
@@ -46,24 +52,26 @@ app.get('/api/v1/health', async (c) => {
       console.error('❌ [EventCorrector] DB health check failed:', error)
       return false
     })
-  const minioConnected = await minioClient
-    .bucketExists(config.MINIO_RAW_DATA_BUCKET)
+  const storageConnected = await objectStorageClient
+    .bucketExists(config.OBJECT_STORAGE_RAW_DATA_BUCKET)
     .then(() => true)
     .catch((error) => {
-      console.error('❌ [EventCorrector] MinIO health check failed:', error)
+      const reason = describeStorageError(error)
+      const log = reason === 'ECONNREFUSED' ? console.warn : console.error
+      log(`❌ [EventCorrector] object storage health check failed: ${reason}`)
       return false
     })
 
   return c.json(
     {
-      status: rabbitConnected && dbConnected && minioConnected ? 'ok' : 'degraded',
+      status: rabbitConnected && dbConnected && storageConnected ? 'ok' : 'degraded',
       rabbitmq_connected: rabbitConnected,
       db_connected: dbConnected,
-      minio_connected: minioConnected,
+      object_storage_connected: storageConnected,
       queue: config.EVENT_CORRECTION_QUEUE,
       timestamp: new Date().toISOString(),
     },
-    rabbitConnected && dbConnected && minioConnected ? 200 : 503,
+    rabbitConnected && dbConnected && storageConnected ? 200 : 503,
   )
 })
 
@@ -117,7 +125,7 @@ export async function startEventCorrectorService() {
 
 async function bootstrap() {
   try {
-    await ensureMinioBucket()
+    await ensureObjectStorageBucket()
     await startConsumer()
   } catch (error) {
     console.error('❌ Event Corrector bootstrap failed:', error)
