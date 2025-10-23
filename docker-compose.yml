@@ -90,23 +90,12 @@ services:
       -master.port.grpc=19333
     networks:
       - eeg-network
-    healthcheck:
-      test:
-        - CMD
-        - sh
-        - -c
-        - |
-          nc -z localhost ${OBJECT_STORAGE_PORT}
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 15s
 
   object-storage-bootstrap:
     image: alpine:3.20
     depends_on:
       object-storage:
-        condition: service_healthy
+        condition: service_started
     environment:
       - OBJECT_STORAGE_ENDPOINT=${OBJECT_STORAGE_ENDPOINT}
       - OBJECT_STORAGE_PORT=${OBJECT_STORAGE_PORT}
@@ -306,7 +295,7 @@ services:
       db:
         condition: service_healthy
       object-storage:
-        condition: service_healthy
+        condition: service_started
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       RABBITMQ_MGMT_PORT: ${RABBITMQ_MGMT_PORT}
