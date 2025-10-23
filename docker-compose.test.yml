@@ -1,0 +1,51 @@
+services:
+  integration-test:
+    build:
+      context: .
+      dockerfile: integration_test/Dockerfile
+    profiles:
+      - integration-tests
+    environment:
+      BASE_URL: ${INTEGRATION_TEST_BASE_URL:-http://ingress/api/v1}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      MINIO_ENDPOINT: ${INTEGRATION_TEST_MINIO_ENDPOINT:-object-storage}
+      MINIO_PORT: ${OBJECT_STORAGE_PORT}
+      MINIO_USE_SSL: ${OBJECT_STORAGE_USE_SSL}
+      MINIO_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY}
+      OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
+      OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
+      OBJECT_STORAGE_BIDS_EXPORTS_BUCKET: ${OBJECT_STORAGE_BIDS_EXPORTS_BUCKET}
+    depends_on:
+      ingress:
+        condition: service_started
+      db:
+        condition: service_healthy
+      object-storage-bootstrap:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      auth_manager:
+        condition: service_healthy
+      collector:
+        condition: service_healthy
+      processor:
+        condition: service_healthy
+      media_processor:
+        condition: service_healthy
+      realtime_analyzer:
+        condition: service_healthy
+      session_manager:
+        condition: service_healthy
+      stimulus_asset_processor:
+        condition: service_healthy
+      data_linker:
+        condition: service_healthy
+      event_corrector:
+        condition: service_healthy
+      bids_exporter:
+        condition: service_healthy
+      erp_neuro_marketing:
+        condition: service_healthy
+    networks:
+      - eeg-network

@@ -1,9 +1,8 @@
-import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
+import amqp, { Channel, ConsumeMessage } from 'amqplib'
 import { config } from '../config/env'
 import { handleLinkerJob } from '../domain/services/linker'
 import { dataLinkerJobPayloadSchema } from '../app/schemas/job'
 
-let amqpConnection: Connection | null = null;
 let amqpChannel: Channel | null = null;
 
 /**
@@ -29,7 +28,6 @@ export async function startConsumer(): Promise<void> {
     });
     connection.on('close', () => {
       console.error('[RabbitMQ] Connection closed. Attempting to reconnect...');
-      amqpConnection = null;
       amqpChannel = null;
       setTimeout(() => {
         void startConsumer();
@@ -52,7 +50,6 @@ export async function startConsumer(): Promise<void> {
     await channel.assertQueue(queue, { durable: true });
     await channel.prefetch(1);
 
-    amqpConnection = connection;
     amqpChannel = channel;
 
     console.log(`[RabbitMQ] Waiting for messages in queue: "${queue}"`);

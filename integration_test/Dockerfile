@@ -1,9 +1,7 @@
-FROM oven/bun:1.2.22-slim AS builder
-ARG SERVICE_NAME
+FROM oven/bun:1.2.22-slim AS deps
 
 WORKDIR /app
 
-# workspaces対応: ルートのpackage.jsonとロックファイル
 COPY package.json bun.lock tsconfig.base.json ./
 COPY auth_manager/package.json ./auth_manager/
 COPY collector/package.json ./collector/
@@ -18,19 +16,11 @@ COPY observability_dashboard/package.json ./observability_dashboard/
 
 RUN bun install --frozen-lockfile --no-cache
 
-FROM oven/bun:1.2.22-slim
-ARG SERVICE_NAME
-
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+FROM deps
 
 WORKDIR /app
+COPY . .
 
-# node_modulesはルートから
-COPY --from=builder /app/node_modules ./node_modules
-COPY tsconfig.base.json ./tsconfig.base.json
-COPY shared ./shared
-COPY ${SERVICE_NAME}/src ./${SERVICE_NAME}/src
-COPY ${SERVICE_NAME}/tsconfig.json ./${SERVICE_NAME}/
+WORKDIR /app/integration_test
 
-WORKDIR /app/${SERVICE_NAME}
-CMD ["bun", "run", "src/main.ts"]
+CMD ["bun", "test"]

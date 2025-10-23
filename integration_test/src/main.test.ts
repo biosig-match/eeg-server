@@ -9,18 +9,24 @@ import { Buffer } from 'buffer'
 import neatCSV from 'neat-csv'
 import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_corrector/src/domain/services/trigger_timestamps'
 
-const BASE_URL = 'http://localhost:8080/api/v1'
-const DATABASE_URL = 'postgres://admin:password@localhost:5432/eeg_data'
+const BASE_URL = process.env.BASE_URL ?? 'http://localhost:8080/api/v1'
+const DATABASE_URL =
+  process.env.DATABASE_URL ?? 'postgres://admin:password@localhost:5432/eeg_data'
+const OBJECT_STORAGE_ENDPOINT = process.env.MINIO_ENDPOINT ?? 'localhost'
+const OBJECT_STORAGE_PORT = Number.parseInt(process.env.MINIO_PORT ?? '8333', 10)
+const OBJECT_STORAGE_USE_SSL =
+  (process.env.MINIO_USE_SSL ?? 'false').toLowerCase() === 'true'
+const OBJECT_STORAGE_ACCESS_KEY = process.env.MINIO_ACCESS_KEY ?? 'storageadmin'
+const OBJECT_STORAGE_SECRET_KEY = process.env.MINIO_SECRET_KEY ?? 'storageadmin'
 const OBJECT_STORAGE_CONFIG = {
-  endPoint: 'localhost',
-  port: 8333,
-  useSSL: false,
-  accessKey: 'storageadmin',
-  secretKey: 'storageadmin',
+  endPoint: OBJECT_STORAGE_ENDPOINT,
+  port: OBJECT_STORAGE_PORT,
+  useSSL: OBJECT_STORAGE_USE_SSL,
+  accessKey: OBJECT_STORAGE_ACCESS_KEY,
+  secretKey: OBJECT_STORAGE_SECRET_KEY,
 }
-const OBJECT_STORAGE_RAW_DATA_BUCKET = 'raw-data'
-const OBJECT_STORAGE_MEDIA_BUCKET = 'media'
-const BIDS_BUCKET = 'bids-exports'
+const OBJECT_STORAGE_MEDIA_BUCKET =
+  process.env.OBJECT_STORAGE_MEDIA_BUCKET ?? 'media'
 
 function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
   const client = new S3CompatibleClient({

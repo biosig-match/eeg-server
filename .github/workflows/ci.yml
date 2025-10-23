@@ -1,0 +1,258 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.2.22
+  COMPOSE_FILES: -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.test.yml
+
+jobs:
+  lint_ts:
+    name: Lint TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Run ESLint
+        run: bunx --bun eslint . --max-warnings=0
+
+  lint_py:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Ruff
+        run: pip install ruff
+      - name: Run Ruff
+        run: ruff check .
+
+  typecheck_ts:
+    name: Type Check TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Run tsc --noEmit across packages
+        run: |
+          set -euo pipefail
+          projects=(
+            auth_manager/tsconfig.json
+            collector/tsconfig.json
+            data_linker/tsconfig.json
+            event_corrector/tsconfig.json
+            integration_test/tsconfig.json
+            media_processor/tsconfig.json
+            processor/tsconfig.json
+            session_manager/tsconfig.json
+            stimulus_asset_processor/tsconfig.json
+            observability_dashboard/tsconfig.json
+          )
+          for config in "${projects[@]}"; do
+            echo "::group::tsc --noEmit -p ${config}"
+            bunx --bun tsc --noEmit -p "${config}"
+            echo "::endgroup::"
+          done
+
+  typecheck_py:
+    name: Type Check Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Pyright
+        run: npm install -g pyright
+      - name: Run Pyright
+        run: pyright
+
+  integration_tests:
+    name: Integration Tests (Compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    needs:
+      - lint_ts
+      - lint_py
+      - typecheck_ts
+      - typecheck_py
+    env:
+      COMPOSE_PROFILES: integration-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install Bun dependencies
+        run: bun install --frozen-lockfile
+      - name: Start docker-compose stack
+        run: |
+          set -euo pipefail
+          docker compose ${{ env.COMPOSE_FILES }} up -d --wait
+      - name: Verify service health endpoints
+        run: |
+          set -euo pipefail
+          declare -A checks=(
+            [collector]=http://localhost:3000/health
+            [processor]=http://localhost:3010/health
+            [media_processor]=http://localhost:3020/health
+            [realtime_analyzer]=http://localhost:5002/health
+            [observability_dashboard]=http://localhost:9000/health
+            [session_manager]=http://localhost:3000/health
+            [stimulus_asset_processor]=http://localhost:3050/health
+            [auth_manager]=http://localhost:3000/health
+            [data_linker]=http://localhost:3030/health
+            [event_corrector]=http://localhost:3040/health
+            [bids_exporter]=http://localhost:8000/health
+            [erp_neuro_marketing]=http://localhost:8001/health
+          )
+          for service in "${!checks[@]}"; do
+            url="${checks[$service]}"
+            echo "::group::${service} -> ${url}"
+            docker compose ${{ env.COMPOSE_FILES }} exec -T "${service}" curl -fsS "${url}"
+            echo "::endgroup::"
+          done
+      - name: Verify ingress routing
+        run: |
+          set -euo pipefail
+          nginx_port="$(grep -E '^NGINX_PORT=' .env | tail -n1 | cut -d= -f2-)"
+          nginx_port="${nginx_port:-8080}"
+          curl -fsS "http://localhost:${nginx_port}/api/v1/health"
+      - name: Run collector standalone tests
+        run: bun --env-file=.env run collector/test/standalone_test.ts
+      - name: Run integration test suite
+        run: bun --cwd integration_test test --timeout 300000
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          docker compose ${{ env.COMPOSE_FILES }} logs --no-color > docker-compose.log
+      - name: Upload docker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-logs
+          path: docker-compose.log
+      - name: Tear down docker-compose stack
+        if: always()
+        run: |
+          docker compose ${{ env.COMPOSE_FILES }} down -v --remove-orphans
+
+  build_images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    needs:
+      - integration_tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bun-auth-manager
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=auth_manager
+          - name: bun-collector
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=collector
+          - name: bun-data-linker
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=data_linker
+          - name: bun-event-corrector
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=event_corrector
+          - name: bun-media-processor
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=media_processor
+          - name: bun-processor
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=processor
+          - name: bun-session-manager
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=session_manager
+          - name: bun-stimulus-asset-processor
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=stimulus_asset_processor
+          - name: bun-observability-dashboard
+            context: .
+            dockerfile: docker/Dockerfile.bun
+            build-args: SERVICE_NAME=observability_dashboard
+          - name: python-realtime-analyzer
+            context: .
+            dockerfile: docker/Dockerfile.python
+            build-args: SERVICE_NAME=realtime_analyzer
+          - name: python-bids-exporter
+            context: .
+            dockerfile: docker/Dockerfile.python
+            build-args: SERVICE_NAME=bids_exporter
+          - name: python-erp-neuro-marketing
+            context: .
+            dockerfile: docker/Dockerfile.python
+            build-args: SERVICE_NAME=erp_neuro_marketing
+          - name: nginx-proxy
+            context: nginx
+            dockerfile: nginx/Dockerfile
+            build-args: ""
+          - name: integration-test-runner
+            context: .
+            dockerfile: integration_test/Dockerfile
+            build-args: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker build ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.build-args }}" ]; then
+            docker build \
+              --file "${{ matrix.dockerfile }}" \
+              --build-arg "${{ matrix.build-args }}" \
+              "${{ matrix.context }}"
+          else
+            docker build \
+              --file "${{ matrix.dockerfile }}" \
+              "${{ matrix.context }}"
+          fi

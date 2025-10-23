@@ -81,7 +81,7 @@ export async function listUserTables(): Promise<TableSummary[]> {
       pg_relation_size(relid) AS table_bytes,
       pg_indexes_size(relid) AS index_bytes,
       GREATEST(pg_total_relation_size(relid) - pg_relation_size(relid) - pg_indexes_size(relid), 0) AS toast_bytes,
-      to_char(last_analyze, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_analyzed
+      to_char(last_analyze, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_analyzed
     FROM pg_catalog.pg_stat_user_tables
     ORDER BY pg_total_relation_size(relid) DESC;
   `

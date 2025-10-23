@@ -12,6 +12,10 @@ integration_test/**/*.test.ts      # Exclude test source files
 **/*.test.py
 session_manager/test/dummy_assets
 
+# Allow integration test sources and fixtures to be included in the integration-test image.
+!integration_test/src/**
+!integration_test/assets/**
+
 # Documentation
 **/*.md
 !README.md
