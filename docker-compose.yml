@@ -90,12 +90,23 @@ services:
       -master.port.grpc=19333
     networks:
       - eeg-network
+    healthcheck:
+      test:
+        - CMD
+        - sh
+        - -c
+        - |
+          nc -z localhost ${OBJECT_STORAGE_PORT}
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
 
   object-storage-bootstrap:
     image: alpine:3.20
     depends_on:
       object-storage:
-        condition: service_started
+        condition: service_healthy
     environment:
       - OBJECT_STORAGE_ENDPOINT=${OBJECT_STORAGE_ENDPOINT}
       - OBJECT_STORAGE_PORT=${OBJECT_STORAGE_PORT}
@@ -106,45 +117,53 @@ services:
       - OBJECT_STORAGE_MEDIA_BUCKET=${OBJECT_STORAGE_MEDIA_BUCKET}
       - OBJECT_STORAGE_BIDS_EXPORTS_BUCKET=${OBJECT_STORAGE_BIDS_EXPORTS_BUCKET}
       - OBJECT_STORAGE_ERP_MODELS_BUCKET=${OBJECT_STORAGE_ERP_MODELS_BUCKET}
-    entrypoint: >
-      /bin/sh -c "
-      set -euo pipefail;
-      apk add --no-cache s3cmd;
-      SCHEME=\$( [ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo https || echo http );
-      ENDPOINT="$${SCHEME}://${OBJECT_STORAGE_ENDPOINT}:${OBJECT_STORAGE_PORT}";
-      USE_HTTPS=\$( [ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo True || echo False );
-      printf '[default]\n' > /tmp/s3cfg
-      printf 'access_key = %s\n' "${OBJECT_STORAGE_ACCESS_KEY}" >> /tmp/s3cfg
-      printf 'secret_key = %s\n' "${OBJECT_STORAGE_SECRET_KEY}" >> /tmp/s3cfg
-      printf 'host_base = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
-      printf 'host_bucket = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
-      printf 'use_https = %s\n' "$${USE_HTTPS}" >> /tmp/s3cfg
-      printf 'check_ssl_certificate = False\n' >> /tmp/s3cfg
-      printf 'check_ssl_hostname = False\n' >> /tmp/s3cfg
-      printf 'signature_v2 = False\n' >> /tmp/s3cfg
-      echo "Waiting for object storage endpoint $${ENDPOINT}...";
-      until s3cmd --config=/tmp/s3cfg ls >/dev/null 2>&1; do
-        sleep 2;
-      done;
-      echo "✅ Object storage endpoint is ready.";
-      ensure_bucket() {
-        BUCKET="$1";
-        if [ -z "$${BUCKET}" ]; then
-          return 0;
-        fi;
-        if s3cmd --config=/tmp/s3cfg ls "s3://$${BUCKET}" >/dev/null 2>&1; then
-          echo "✅ Bucket $${BUCKET} already exists.";
-        else
-          s3cmd --config=/tmp/s3cfg mb "s3://$${BUCKET}";
-          echo "✅ Bucket $${BUCKET} created.";
-        fi;
-      };
-      ensure_bucket "${OBJECT_STORAGE_RAW_DATA_BUCKET}";
-      ensure_bucket "${OBJECT_STORAGE_MEDIA_BUCKET}";
-      ensure_bucket "${OBJECT_STORAGE_BIDS_EXPORTS_BUCKET}";
-      ensure_bucket "${OBJECT_STORAGE_ERP_MODELS_BUCKET}";
-      echo "✅ Bucket bootstrap completed.";
-      "
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        apk add --no-cache s3cmd
+        SCHEME=$( [ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo https || echo http )
+        ENDPOINT="$${SCHEME}://${OBJECT_STORAGE_ENDPOINT}:${OBJECT_STORAGE_PORT}"
+        USE_HTTPS=$( [ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo True || echo False )
+        printf '[default]\n' > /tmp/s3cfg
+        printf 'access_key = %s\n' "${OBJECT_STORAGE_ACCESS_KEY}" >> /tmp/s3cfg
+        printf 'secret_key = %s\n' "${OBJECT_STORAGE_SECRET_KEY}" >> /tmp/s3cfg
+        printf 'host_base = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
+        printf 'host_bucket = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
+        printf 'use_https = %s\n' "$${USE_HTTPS}" >> /tmp/s3cfg
+        printf 'check_ssl_certificate = False\n' >> /tmp/s3cfg
+        printf 'check_ssl_hostname = False\n' >> /tmp/s3cfg
+        printf 'signature_v2 = False\n' >> /tmp/s3cfg
+        echo "Waiting for object storage endpoint $${ENDPOINT}..."
+        MAX_RETRIES=30
+        RETRY_COUNT=0
+        until s3cmd --config=/tmp/s3cfg ls >/dev/null 2>&1; do
+          RETRY_COUNT=$$((RETRY_COUNT + 1))
+          if [ $${RETRY_COUNT} -ge $${MAX_RETRIES} ]; then
+            echo "❌ ERROR: Object storage did not become ready after $${MAX_RETRIES} attempts (60 seconds). Exiting."
+            exit 1
+          fi
+          sleep 2
+        done
+        echo "✅ Object storage endpoint is ready."
+        ensure_bucket() {
+          BUCKET="$1"
+          if [ -z "$${BUCKET}" ]; then
+            return 0
+          fi
+          if s3cmd --config=/tmp/s3cfg ls "s3://$${BUCKET}" >/dev/null 2>&1; then
+            echo "✅ Bucket $${BUCKET} already exists."
+          else
+            s3cmd --config=/tmp/s3cfg mb "s3://$${BUCKET}"
+            echo "✅ Bucket $${BUCKET} created."
+          fi
+        }
+        ensure_bucket "${OBJECT_STORAGE_RAW_DATA_BUCKET}"
+        ensure_bucket "${OBJECT_STORAGE_MEDIA_BUCKET}"
+        ensure_bucket "${OBJECT_STORAGE_BIDS_EXPORTS_BUCKET}"
+        ensure_bucket "${OBJECT_STORAGE_ERP_MODELS_BUCKET}"
+        echo "✅ Bucket bootstrap completed."
     networks:
       - eeg-network
   collector:
@@ -287,7 +306,7 @@ services:
       db:
         condition: service_healthy
       object-storage:
-        condition: service_started
+        condition: service_healthy
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       RABBITMQ_MGMT_PORT: ${RABBITMQ_MGMT_PORT}

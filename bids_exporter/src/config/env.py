@@ -13,7 +13,10 @@ def _get_bool(name: str, default: bool = False) -> bool:
   raw = os.getenv(name)
   if raw is None:
     return default
-  return raw.lower() in {"1", "true", "yes", "on"}
+  lowered = raw.lower()
+  if lowered not in {"true", "false"}:
+    raise ValueError(f"Environment variable {name} must be 'true' or 'false', got: {raw}")
+  return lowered == "true"
 
 
 def _get_float(name: str, default: float) -> float:
