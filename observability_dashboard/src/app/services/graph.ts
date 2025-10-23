@@ -1,7 +1,7 @@
 import { config } from '../../config/env'
 import { checkDatabaseHealth } from './database'
 import { readRabbitStatus } from './rabbitmq'
-import { checkMinioHealth } from './storage'
+import { checkObjectStorageHealth } from './storage'
 import { EdgeDefinition, NodeKind, QueueDefinition, ServiceDefinition, graphEdges, queues, services } from './serviceRegistry'
 import { fetchJsonWithTimeout } from '../utils/http'
 
@@ -47,7 +47,7 @@ export interface GraphSnapshot {
     checkedAt: string
     version?: string
   }
-  minio: {
+  objectStorage: {
     healthy: boolean
     error?: string
     checkedAt: string
@@ -129,11 +129,11 @@ function determineQueueStatus(queue: QueueDefinition, rabbitQueues: ReturnType<t
 
 export async function buildGraphSnapshot(): Promise<GraphSnapshot> {
   const generatedAt = new Date().toISOString()
-  const [serviceHealthResults, rabbitStatus, dbHealth, minioHealth] = await Promise.all([
+  const [serviceHealthResults, rabbitStatus, dbHealth, objectStorageHealth] = await Promise.all([
     Promise.all(services.map((definition) => checkServiceHealth(definition))),
     readRabbitStatus(),
     checkDatabaseHealth(),
-    checkMinioHealth(10),
+    checkObjectStorageHealth(10),
   ])
 
   const serviceStatusMap = new Map(serviceHealthResults.map((item) => [item.id, item.status]))
@@ -143,8 +143,10 @@ export async function buildGraphSnapshot(): Promise<GraphSnapshot> {
   if (!dbHealth.healthy) {
     console.error(`[observability] Database health check failed: ${dbHealth.error ?? 'unknown error'}`)
   }
-  if (!minioHealth.healthy) {
-    console.error(`[observability] MinIO health check failed: ${minioHealth.error ?? 'unknown error'}`)
+  if (!objectStorageHealth.healthy) {
+    console.error(
+      `[observability] Object storage health check failed: ${objectStorageHealth.error ?? 'unknown error'}`,
+    )
   }
   const nodes: GraphNode[] = []
 
@@ -158,10 +160,10 @@ export async function buildGraphSnapshot(): Promise<GraphSnapshot> {
           ? dbHealth.healthy
             ? { level: 'ok', checkedAt: dbHealth.checkedAt, detail: dbHealth.version }
             : { level: 'error', detail: dbHealth.error, checkedAt: dbHealth.checkedAt }
-          : service.id === 'minio'
-            ? minioHealth.healthy
-              ? { level: 'ok', checkedAt: minioHealth.checkedAt }
-              : { level: 'error', detail: minioHealth.error, checkedAt: minioHealth.checkedAt }
+        : service.id === 'object-storage'
+          ? objectStorageHealth.healthy
+            ? { level: 'ok', checkedAt: objectStorageHealth.checkedAt }
+            : { level: 'error', detail: objectStorageHealth.error, checkedAt: objectStorageHealth.checkedAt }
             : serviceStatusMap.get(service.id) ?? { level: 'unknown' }
 
     nodes.push({
@@ -171,8 +173,8 @@ export async function buildGraphSnapshot(): Promise<GraphSnapshot> {
       description: service.description,
       status,
       attributes:
-        service.id === 'minio'
-          ? { bucketCount: minioHealth.buckets.length }
+        service.id === 'object-storage'
+          ? { bucketCount: objectStorageHealth.buckets.length }
           : service.id === 'postgres'
             ? { version: dbHealth.version }
             : undefined,
@@ -238,11 +240,11 @@ export async function buildGraphSnapshot(): Promise<GraphSnapshot> {
       checkedAt: dbHealth.checkedAt,
       version: dbHealth.version,
     },
-    minio: {
-      healthy: minioHealth.healthy,
-      error: minioHealth.error,
-      checkedAt: minioHealth.checkedAt,
-      buckets: minioHealth.buckets.map((bucket) => ({
+    objectStorage: {
+      healthy: objectStorageHealth.healthy,
+      error: objectStorageHealth.error,
+      checkedAt: objectStorageHealth.checkedAt,
+      buckets: objectStorageHealth.buckets.map((bucket) => ({
         name: bucket.name,
         createdAt: bucket.createdAt,
       })),

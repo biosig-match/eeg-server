@@ -15,6 +15,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/minio": "^7.1.1",
     "@types/pg-format": "^1.0.4",
     "dotenv": "^16.4.5"
   }

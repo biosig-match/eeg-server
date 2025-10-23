@@ -1,5 +1,5 @@
 import { PoolClient } from 'pg';
-import { minioClient } from '../../infrastructure/minio';
+import { objectStorageClient } from '../../infrastructure/objectStorage';
 import { config } from '../../config/env';
 import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm';
 import type { EventCorrectorJobPayload } from '../../app/schemas/job';
@@ -16,12 +16,15 @@ const MAX_ALIGNMENT_ERROR_US = 500_000n; // 0.5 seconds tolerance for trigger al
 const bigintAbs = (value: bigint): bigint => (value < 0n ? -value : value);
 
 /**
- * MinIOから全ての生データオブジェクトを個別にダウンロードし、それぞれを伸長したBufferの配列として返す
+ * オブジェクトストレージから全ての生データオブジェクトを個別にダウンロードし、それぞれを伸長したBufferの配列として返す
  */
 async function downloadAndDecompressObjects(objectIds: string[]): Promise<Buffer[]> {
   const decompressedBuffers: Buffer[] = [];
   for (const objectId of objectIds) {
-    const stream = await minioClient.getObject(config.MINIO_RAW_DATA_BUCKET, objectId);
+    const stream = await objectStorageClient.getObject(
+      config.OBJECT_STORAGE_RAW_DATA_BUCKET,
+      objectId,
+    );
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
       chunks.push(Buffer.from(chunk));

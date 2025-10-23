@@ -1,4 +1,4 @@
-FROM oven/bun:1.2.23-slim AS builder
+FROM oven/bun:1.2.22-slim AS builder
 ARG SERVICE_NAME
 
 WORKDIR /app
@@ -18,7 +18,7 @@ COPY observability_dashboard/package.json ./observability_dashboard/
 
 RUN bun install --frozen-lockfile
 
-FROM oven/bun:1.2.23-slim
+FROM oven/bun:1.2.22-slim
 ARG SERVICE_NAME
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
@@ -28,6 +28,7 @@ WORKDIR /app
 # node_modulesはルートから
 COPY --from=builder /app/node_modules ./node_modules
 COPY tsconfig.base.json ./tsconfig.base.json
+COPY shared ./shared
 COPY ${SERVICE_NAME}/src ./${SERVICE_NAME}/src
 COPY ${SERVICE_NAME}/tsconfig.json ./${SERVICE_NAME}/
 

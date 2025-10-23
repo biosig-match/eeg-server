@@ -3,15 +3,15 @@ import { z } from 'zod';
 const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   DATABASE_URL: z.string().url(),
-  MINIO_ENDPOINT: z.string(),
-  MINIO_PORT: z.coerce.number(),
-  MINIO_ACCESS_KEY: z.string(),
-  MINIO_SECRET_KEY: z.string(),
-  MINIO_USE_SSL: z
-    .string()
-    .transform((s) => s === 'true')
-    .default('false'),
-  MINIO_MEDIA_BUCKET: z.string(),
+  OBJECT_STORAGE_ENDPOINT: z.string(),
+  OBJECT_STORAGE_PORT: z.coerce.number(),
+  OBJECT_STORAGE_ACCESS_KEY: z.string(),
+  OBJECT_STORAGE_SECRET_KEY: z.string(),
+  OBJECT_STORAGE_USE_SSL: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((s) => s === 'true'),
+  OBJECT_STORAGE_MEDIA_BUCKET: z.string(),
   RABBITMQ_URL: z.string().url(),
   DATA_LINKER_QUEUE: z.string(),
   STIMULUS_ASSET_QUEUE: z.string(),

@@ -1184,8 +1184,8 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
         const rabbitMeta = document.getElementById('rabbit-meta');
         const postgresStatus = document.getElementById('postgres-status');
         const postgresMeta = document.getElementById('postgres-meta');
-        const minioStatus = document.getElementById('minio-status');
-        const minioMeta = document.getElementById('minio-meta');
+        const objectStorageStatus = document.getElementById('object-storage-status');
+        const objectStorageMeta = document.getElementById('object-storage-meta');
         if (rabbitStatus) {
           rabbitStatus.textContent = snapshot.rabbit.healthy ? '正常' : '障害';
           rabbitStatus.className = 'metric-value';
@@ -1209,15 +1209,21 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
               formatDate(snapshot.postgres.checkedAt)
             : 'エラー: ' + (snapshot.postgres.error ?? '未知のエラー');
         }
-        if (minioStatus) {
-          minioStatus.textContent = snapshot.minio.healthy ? '正常' : '障害';
-          minioStatus.className = 'metric-value';
-          minioStatus.classList.add(snapshot.minio.healthy ? 'status-ok' : 'status-error');
+        if (objectStorageStatus) {
+          objectStorageStatus.textContent = snapshot.objectStorage.healthy ? '正常' : '障害';
+          objectStorageStatus.className = 'metric-value';
+          objectStorageStatus.classList.add(
+            snapshot.objectStorage.healthy ? 'status-ok' : 'status-error',
+          );
         }
-        if (minioMeta) {
-          minioMeta.textContent = snapshot.minio.healthy
-            ? 'バケット数: ' + snapshot.minio.buckets.length + ' / 最終確認: ' + formatDate(snapshot.minio.checkedAt)
-            : 'エラー: ' + (snapshot.minio.error ?? '未知のエラー');
+        if (objectStorageMeta) {
+          objectStorageMeta.textContent = snapshot.objectStorage.healthy
+            ?
+                'バケット数: ' +
+                snapshot.objectStorage.buckets.length +
+                ' / 最終確認: ' +
+                formatDate(snapshot.objectStorage.checkedAt)
+            : 'エラー: ' + (snapshot.objectStorage.error ?? '未知のエラー');
         }
       }
 
@@ -1450,11 +1456,11 @@ export function buildDashboardScript(effectiveRefreshMs: number): string {
       function renderBuckets(health) {
         if (!(storageGrid instanceof HTMLElement)) return;
         if (!health) {
-          storageGrid.innerHTML = '<p class="error">MinIO 状況の取得に失敗しました。</p>';
+          storageGrid.innerHTML = '<p class="error">オブジェクトストレージの状況取得に失敗しました。</p>';
           return;
         }
         if (!health.healthy) {
-          storageGrid.innerHTML = '<p class="error">MinIO に接続できません: ' + (health.error ?? '原因不明') + '</p>';
+          storageGrid.innerHTML = '<p class="error">オブジェクトストレージに接続できません: ' + (health.error ?? '原因不明') + '</p>';
           bucketsSummary.textContent = '';
           return;
         }

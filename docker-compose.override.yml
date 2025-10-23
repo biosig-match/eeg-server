@@ -11,12 +11,14 @@ services:
       - ./processor/tsconfig.json:/app/processor/tsconfig.json:ro
       - ./node_modules:/app/node_modules
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
   media_processor:
     volumes:
       - ./media_processor/src:/app/media_processor/src
       - ./media_processor/tsconfig.json:/app/media_processor/tsconfig.json:ro
       - ./node_modules:/app/node_modules
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
   realtime_analyzer:
     volumes:
       - ./realtime_analyzer/src:/app/src
@@ -26,12 +28,14 @@ services:
       - ./session_manager/tsconfig.json:/app/session_manager/tsconfig.json:ro
       - ./node_modules:/app/node_modules
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
   stimulus_asset_processor:
     volumes:
       - ./stimulus_asset_processor/src:/app/stimulus_asset_processor/src
       - ./stimulus_asset_processor/tsconfig.json:/app/stimulus_asset_processor/tsconfig.json:ro
       - ./node_modules:/app/node_modules
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
   auth_manager:
     volumes:
       - ./auth_manager/src:/app/auth_manager/src
@@ -50,6 +54,7 @@ services:
       - ./event_corrector/tsconfig.json:/app/event_corrector/tsconfig.json:ro
       - ./node_modules:/app/node_modules
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
   bids_exporter:
     volumes:
       - ./bids_exporter/src:/app/src

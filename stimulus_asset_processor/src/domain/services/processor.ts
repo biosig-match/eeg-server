@@ -1,5 +1,5 @@
 import { dbPool } from '../../infrastructure/db'
-import { minioClient } from '../../infrastructure/minio'
+import { objectStorageClient } from '../../infrastructure/objectStorage'
 import { config } from '../../config/env'
 import type { StimulusAssetJobPayload } from '../../app/schemas/job'
 import { stimulusAssetJobPayloadSchema } from '../../app/schemas/job'
@@ -34,8 +34,8 @@ async function processJob(jobPayload: StimulusAssetJobPayload): Promise<void> {
       const fileBuffer = Buffer.from(file.contentBase64, 'base64');
       const objectId = `stimuli/${experiment_id}/${file.fileName}`;
 
-      await minioClient.putObject(
-        config.MINIO_MEDIA_BUCKET,
+      await objectStorageClient.putObject(
+        config.OBJECT_STORAGE_MEDIA_BUCKET,
         objectId,
         fileBuffer,
         fileBuffer.length,

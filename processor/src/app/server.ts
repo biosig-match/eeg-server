@@ -1,5 +1,5 @@
 import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
-import { Client as MinioClient } from 'minio'
+import { Client as S3CompatibleClient } from 'minio'
 import { Pool } from 'pg'
 import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm'
 import { v4 as uuidv4 } from 'uuid'
@@ -9,6 +9,11 @@ import { zValidator } from '@hono/zod-validator'
 import { HTTPException } from 'hono/http-exception'
 
 import { config } from '../config/env'
+import {
+  describeStorageError,
+  ensureBucketExists,
+  waitForObjectStorageConnection,
+} from '../../../shared/objectStorage'
 
 const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any
 
@@ -19,12 +24,13 @@ let consumerTag: string | null = null
 let isConsuming = false
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 const pgPool = new Pool({ connectionString: config.DATABASE_URL })
-const minioClient = new MinioClient({
-  endPoint: config.MINIO_ENDPOINT,
-  port: config.MINIO_PORT,
-  useSSL: config.MINIO_USE_SSL,
-  accessKey: config.MINIO_ACCESS_KEY,
-  secretKey: config.MINIO_SECRET_KEY,
+
+const objectStorageClient = new S3CompatibleClient({
+  endPoint: config.OBJECT_STORAGE_ENDPOINT,
+  port: config.OBJECT_STORAGE_PORT,
+  useSSL: config.OBJECT_STORAGE_USE_SSL,
+  accessKey: config.OBJECT_STORAGE_ACCESS_KEY,
+  secretKey: config.OBJECT_STORAGE_SECRET_KEY,
 })
 
 let lastRabbitConnectedAt: Date | null = null
@@ -140,7 +146,7 @@ export async function startProcessorService() {
 async function bootstrap() {
   try {
     await ensureZstdReady()
-    await ensureMinioBucket()
+    await ensureObjectStorageBucket()
     await connectRabbitMQ()
     await startConsumer()
   } catch (error) {
@@ -379,14 +385,14 @@ async function processMessage(msg: ConsumeMessage | null) {
       ...(sessionId && { 'X-Session-Id': sessionId }),
     }
 
-    await minioClient.putObject(
-      config.MINIO_RAW_DATA_BUCKET,
+    await objectStorageClient.putObject(
+      config.OBJECT_STORAGE_RAW_DATA_BUCKET,
       objectId,
       decompressedBuffer,
       decompressedBuffer.length,
       metaData,
     )
-    console.log(`[MinIO] アップロード成功: ${objectId}`)
+    console.log(`[ObjectStorage] アップロード成功: ${objectId}`)
 
     const query = `
       INSERT INTO raw_data_objects (object_id, user_id, device_id, session_id, timestamp_start_ms, timestamp_end_ms, sampling_rate, lsb_to_volts)
@@ -418,32 +424,45 @@ async function processMessage(msg: ConsumeMessage | null) {
   }
 }
 
-async function ensureMinioBucket(maxAttempts = 5, baseDelayMs = 1_000) {
-  let attempt = 0
-  while (attempt < maxAttempts) {
-    attempt += 1
-    try {
-      const bucketExists = await minioClient.bucketExists(config.MINIO_RAW_DATA_BUCKET)
-      if (!bucketExists) {
-        console.log(
-          `[MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" が存在しません。作成します...`,
-        )
-        await minioClient.makeBucket(config.MINIO_RAW_DATA_BUCKET)
-        console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" を作成しました。`)
-      } else {
-        console.log(`✅ [MinIO] バケット "${config.MINIO_RAW_DATA_BUCKET}" はすでに存在します。`)
+async function ensureObjectStorageBucket(maxAttempts = 5, baseDelayMs = 1_000) {
+  const connectionAttempts = Math.max(maxAttempts, 10)
+
+  await waitForObjectStorageConnection(objectStorageClient, {
+    maxAttempts: connectionAttempts,
+    baseDelayMs,
+    onRetry: ({ attempt, maxAttempts: max, error }) =>
+      console.warn(
+        `⏳ [ObjectStorage] 接続待機中 (attempt ${attempt}/${max}). reason=${describeStorageError(error)}`,
+      ),
+    onSuccess: ({ attempt }) => {
+      if (attempt > 1) {
+        console.log(`✅ [ObjectStorage] 接続に成功しました (attempt ${attempt}).`)
       }
-      return
-    } catch (error) {
-      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), 10_000)
+    },
+    onFailure: ({ error }) => {
+      console.error('❌ [ObjectStorage] 接続に失敗しました。', error)
+    },
+  })
+
+  await ensureBucketExists(objectStorageClient, config.OBJECT_STORAGE_RAW_DATA_BUCKET, {
+    maxAttempts,
+    baseDelayMs,
+    onCreateStart: () =>
+      console.log(
+        `[ObjectStorage] バケット "${config.OBJECT_STORAGE_RAW_DATA_BUCKET}" が存在しません。作成します...`,
+      ),
+    onCreateSuccess: () =>
+      console.log(`✅ [ObjectStorage] バケット "${config.OBJECT_STORAGE_RAW_DATA_BUCKET}" を作成しました。`),
+    onAlreadyExists: () =>
+      console.log(`✅ [ObjectStorage] バケット "${config.OBJECT_STORAGE_RAW_DATA_BUCKET}" はすでに存在します。`),
+    onRetry: ({ attempt, maxAttempts: max, error }) =>
+      console.warn(
+        `⏳ [ObjectStorage] バケット初期化を再試行します (attempt ${attempt}/${max}). reason=${describeStorageError(error)}`,
+      ),
+    onFailure: ({ attempt, maxAttempts: max, error }) =>
       console.error(
-        `❌ [MinIO] バケット初期化に失敗しました (attempt ${attempt}/${maxAttempts}).`,
+        `❌ [ObjectStorage] バケット初期化に失敗しました (attempt ${attempt}/${max}).`,
         error,
-      )
-      if (attempt >= maxAttempts) {
-        throw error
-      }
-      await new Promise((resolve) => setTimeout(resolve, delay))
-    }
-  }
+      ),
+  })
 }
