@@ -19,10 +19,22 @@ logger = logging.getLogger(__name__)
 # --- FastAPIアプリケーション ---
 app = FastAPI(title="ERP Neuro-Marketing Service")
 
+
+def _build_health_response() -> JSONResponse:
+    """Generate a consistent health payload for both legacy and versioned endpoints."""
+    return JSONResponse(content={"status": "ok"})
+
+
 @app.get("/health", tags=["Health Check"], include_in_schema=False)
 async def health_check():
     """A simple endpoint to confirm the service is running."""
-    return JSONResponse(content={"status": "ok"})
+    return _build_health_response()
+
+
+@app.get("/api/v1/health", tags=["Health Check"], include_in_schema=False)
+async def health_check_v1():
+    """Versioned health endpoint kept in sync with /health."""
+    return _build_health_response()
 
 @app.on_event("startup")
 async def startup_event():

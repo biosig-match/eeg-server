@@ -10,16 +10,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 COMPOSE_FILES=(-f "${PROJECT_ROOT}/docker-compose.yml")
+# Prefer environment-specific overrides when present:
+# - docker-compose.development.yml: CI/integration specific tweaks
+# - docker-compose.override.yml: local developer overrides
 if [[ -f "${PROJECT_ROOT}/docker-compose.development.yml" ]]; then
   COMPOSE_FILES+=(-f "${PROJECT_ROOT}/docker-compose.development.yml")
 elif [[ -f "${PROJECT_ROOT}/docker-compose.override.yml" ]]; then
   COMPOSE_FILES+=(-f "${PROJECT_ROOT}/docker-compose.override.yml")
+else
+  echo "⚠️  Warning: No override compose file detected; using base definitions only."
 fi
 COMPOSE_FILES+=(-f "${PROJECT_ROOT}/docker-compose.test.yml")
 
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-integration-tests}"
 
 cleanup() {
+  local exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]] && [[ "${SAVE_LOGS_ON_FAILURE:-1}" == "1" ]]; then
+    local log_path="${PROJECT_ROOT}/integration-test-logs.txt"
+    echo "💾 Saving docker logs to ${log_path}..."
+    docker compose "${COMPOSE_FILES[@]}" logs --no-color > "${log_path}" 2>&1 || true
+  fi
+
   echo "🧹 Cleaning up test environment..."
   docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 }

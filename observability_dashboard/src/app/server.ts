@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 
 import { z } from 'zod'
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { zValidator } from '@hono/zod-validator'
 
@@ -21,7 +22,7 @@ import { buildDashboardHtml } from './ui/dashboard'
 
 const app = new Hono()
 
-const BASIC_AUTH_SKIP_PATHS = new Set(['/health'])
+const BASIC_AUTH_SKIP_PATHS = new Set(['/health', '/api/v1/health'])
 const expectedAuthorizationHeader = `Basic ${Buffer.from(
   `${config.OBSERVABILITY_BASIC_USER}:${config.OBSERVABILITY_BASIC_PASSWORD}`,
   'utf8',
@@ -75,8 +76,8 @@ app.use('*', async (c, next) => {
   await next()
 })
 
-app.get('/health', async (c) => {
-  const done = startRequestLog('GET', '/health')
+async function respondWithHealth(c: Context, path: string) {
+  const done = startRequestLog('GET', path)
   const [rabbit, db, objectStorage] = await Promise.all([
     readRabbitStatus(),
     pgHealth(),
@@ -101,7 +102,11 @@ app.get('/health', async (c) => {
     },
     healthy ? 200 : 503,
   )
-})
+}
+
+app.get('/health', async (c) => respondWithHealth(c, '/health'))
+
+app.get('/api/v1/health', async (c) => respondWithHealth(c, '/api/v1/health'))
 
 app.get('/', (c) => {
   const done = startRequestLog('GET', '/')

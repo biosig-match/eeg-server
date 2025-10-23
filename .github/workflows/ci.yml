@@ -129,31 +129,42 @@ jobs:
         run: |
           set -euo pipefail
           declare -A checks=(
-            [collector]=http://localhost:3000/health
-            [processor]=http://localhost:3010/health
-            [media_processor]=http://localhost:3020/health
-            [realtime_analyzer]=http://localhost:5002/health
-            [observability_dashboard]=http://localhost:9000/health
-            [session_manager]=http://localhost:3000/health
-            [stimulus_asset_processor]=http://localhost:3050/health
-            [auth_manager]=http://localhost:3000/health
-            [data_linker]=http://localhost:3030/health
-            [event_corrector]=http://localhost:3040/health
-            [bids_exporter]=http://localhost:8000/health
-            [erp_neuro_marketing]=http://localhost:8001/health
+            [collector]=http://localhost:3000/api/v1/health
+            [processor]=http://localhost:3010/api/v1/health
+            [media_processor]=http://localhost:3020/api/v1/health
+            [realtime_analyzer]=http://localhost:5002/api/v1/health
+            [observability_dashboard]=http://localhost:9000/api/v1/health
+            [session_manager]=http://localhost:3000/api/v1/health
+            [stimulus_asset_processor]=http://localhost:3050/api/v1/health
+            [auth_manager]=http://localhost:3000/api/v1/health
+            [data_linker]=http://localhost:3030/api/v1/health
+            [event_corrector]=http://localhost:3040/api/v1/health
+            [bids_exporter]=http://localhost:8000/api/v1/health
+            [erp_neuro_marketing]=http://localhost:8001/api/v1/health
           )
           for service in "${!checks[@]}"; do
             url="${checks[$service]}"
             echo "::group::${service} -> ${url}"
-            docker compose ${{ env.COMPOSE_FILES }} exec -T "${service}" curl -fsS "${url}"
-            echo "::endgroup::"
+            if docker compose ${{ env.COMPOSE_FILES }} exec -T "${service}" curl -fsS --max-time 10 "${url}"; then
+              echo "::endgroup::"
+            else
+              echo "::error::Health check failed for ${service} at ${url}"
+              docker compose ${{ env.COMPOSE_FILES }} logs --tail=50 "${service}" || true
+              echo "::endgroup::"
+              exit 1
+            fi
           done
       - name: Verify ingress routing
         run: |
           set -euo pipefail
-          nginx_port="$(grep -E '^NGINX_PORT=' .env | tail -n1 | cut -d= -f2-)"
-          nginx_port="${nginx_port:-8080}"
-          curl -fsS "http://localhost:${nginx_port}/api/v1/health"
+          if [[ -f .env ]]; then
+            set -o allexport
+            # shellcheck disable=SC1091
+            source .env
+            set +o allexport
+          fi
+          nginx_port="${NGINX_PORT:-8080}"
+          curl -fsS --max-time 10 "http://localhost:${nginx_port}/api/v1/health"
       - name: Run collector standalone tests
         run: bun --env-file=.env run collector/test/standalone_test.ts
       - name: Run integration test suite
@@ -183,6 +194,7 @@ jobs:
       - integration_tests
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           - name: bun-auth-manager

@@ -39,6 +39,8 @@ services:
         condition: service_healthy
       stimulus_asset_processor:
         condition: service_healthy
+      observability_dashboard:
+        condition: service_healthy
       data_linker:
         condition: service_healthy
       event_corrector:

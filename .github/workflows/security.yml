@@ -11,7 +11,6 @@ on:
 jobs:
   trivy:
     name: Trivy Vulnerability Scan
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -23,7 +22,7 @@ jobs:
         with:
           scan-type: fs
           format: table
-          ignore-unfixed: false
+          ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'

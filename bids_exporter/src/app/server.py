@@ -56,6 +56,12 @@ async def health_check(response: Response):
         response.status_code = 503
         return HealthResponse(status="unhealthy")
 
+
+@app.get("/api/v1/health", response_model=HealthResponse, tags=["Health"])
+async def health_check_v1(response: Response):
+    """Versioned health endpoint kept in sync with legacy /health route."""
+    return await health_check(response)
+
 @app.post("/api/v1/experiments/{experiment_id}/export", response_model=ExportResponse, status_code=202)
 async def start_export(experiment_id: UUID, background_tasks: BackgroundTasks):
     """
