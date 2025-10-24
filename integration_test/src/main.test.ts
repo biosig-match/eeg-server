@@ -25,15 +25,49 @@ const databaseUrlFromEnv =
     : undefined)
 const DATABASE_URL = databaseUrlFromEnv ?? 'postgres://admin:password@localhost:5432/eeg_data'
 
-const rawObjectStorageEndpoint =
-  process.env.TEST_OBJECT_STORAGE_ENDPOINT ??
-  process.env.OBJECT_STORAGE_ENDPOINT ??
-  'localhost'
-const [objectStorageEndpointHost, objectStorageEndpointPort] = rawObjectStorageEndpoint.split(':')
+function parseEndpointParts(endpoint?: string) {
+  if (!endpoint) {
+    return { host: undefined as string | undefined, port: undefined as string | undefined }
+  }
+
+  if (endpoint.includes('://')) {
+    try {
+      const url = new URL(endpoint)
+      return {
+        host: url.hostname || undefined,
+        port: url.port || undefined,
+      }
+    } catch {
+      // フォーマットエラー時は従来ロジックにフォールバック
+    }
+  }
+
+  const [hostPart, portPart] = endpoint.split(':')
+  if (portPart === undefined) {
+    return { host: hostPart || undefined, port: undefined }
+  }
+
+  return { host: hostPart || undefined, port: portPart || undefined }
+}
+
+const testEndpointParts = parseEndpointParts(process.env.TEST_OBJECT_STORAGE_ENDPOINT)
+const serviceEndpointParts = parseEndpointParts(process.env.OBJECT_STORAGE_ENDPOINT)
+
+let objectStorageEndpointHost = testEndpointParts.host ?? serviceEndpointParts.host ?? 'localhost'
+const endpointPortFromEnv = testEndpointParts.port ?? serviceEndpointParts.port
+
+if (!process.env.TEST_OBJECT_STORAGE_ENDPOINT) {
+  const normalizedHost = objectStorageEndpointHost?.toLowerCase()
+  if (!normalizedHost || normalizedHost === 'object-storage') {
+    objectStorageEndpointHost = 'localhost'
+  }
+}
+
 const resolvedObjectStoragePort =
   process.env.TEST_OBJECT_STORAGE_PORT ??
   process.env.OBJECT_STORAGE_PORT ??
-  (objectStorageEndpointPort || undefined)
+  endpointPortFromEnv ??
+  undefined
 const parsedObjectStoragePort = resolvedObjectStoragePort ? Number(resolvedObjectStoragePort) : NaN
 const OBJECT_STORAGE_CONFIG = {
   endPoint: objectStorageEndpointHost,
