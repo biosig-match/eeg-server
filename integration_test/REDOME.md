@@ -23,3 +23,5 @@ bun test
 > もし Docker ネットワーク内ホスト名（例: `db`, `rabbitmq`）を利用したい場合は、
 > `TEST_USE_DOCKER_HOSTNAMES=true bun test` のように実行すると、従来どおりのホスト名を
 > 使用できます。
+> PostgreSQL の起動には 1〜2 分かかる場合があります。`bun test` が接続待ちで失敗した場合も、
+> しばらく待ってから再度実行してください。

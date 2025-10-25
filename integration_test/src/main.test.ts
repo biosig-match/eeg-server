@@ -12,6 +12,15 @@ import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_correcto
 const preferDockerHostnames =
   (process.env.TEST_USE_DOCKER_HOSTNAMES ?? '').toLowerCase() === 'true'
 
+const DEFAULT_DB_HOST_CANDIDATES = [
+  'localhost',
+  '127.0.0.1',
+  'db',
+  'postgres',
+  'postgresql',
+  'timescaledb',
+]
+
 function resolveHost({
   testValue,
   serviceValue,
@@ -80,6 +89,7 @@ const databaseHostCandidates = Array.from(
         const trimmed = value?.trim()
         return trimmed ? [trimmed] : []
       })
+      .concat(DEFAULT_DB_HOST_CANDIDATES)
       .filter((value) => value.length > 0),
   ),
 )
@@ -106,16 +116,20 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 async function resolveDatabaseUrlWithFallbacks(
   candidates: readonly string[],
-  options: { timeoutMs?: number; retryIntervalMs?: number; maxAttemptsPerCandidate?: number } = {},
+  options: {
+    timeoutMs?: number
+    retryIntervalMs?: number
+    maxAttemptsPerCandidate?: number
+  } = {},
 ): Promise<string> {
   if (!candidates.length) {
     throw new Error('No database connection string candidates provided.')
   }
 
   const {
-    timeoutMs = 30_000,
+    timeoutMs = 60_000,
     retryIntervalMs = 1_000,
-    maxAttemptsPerCandidate = 3,
+    maxAttemptsPerCandidate = 5,
   } = options
   const startTime = Date.now()
   let lastError: unknown = null
@@ -694,6 +708,11 @@ describe('Trigger Extraction Utility', () => {
 })
 
 async function resetDatabase() {
+  if (!dbPool) {
+    throw new Error(
+      'Database pool has not been initialised. Ensure docker compose services are running before executing integration tests.',
+    )
+  }
   await dbPool.query(
     'TRUNCATE TABLE erp_analysis_results, session_object_links, session_events, images, audio_clips, raw_data_objects, sessions, experiment_participants, experiment_stimuli, export_tasks, experiments CASCADE',
   )
@@ -1074,14 +1093,29 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
 // --- Test Suite ---
 beforeAll(async () => {
   await initZstd()
-  resolvedDatabaseUrl = await resolveDatabaseUrlWithFallbacks(DATABASE_URL_CANDIDATES)
+  try {
+    resolvedDatabaseUrl = await resolveDatabaseUrlWithFallbacks(DATABASE_URL_CANDIDATES, {
+      timeoutMs:
+        Number.parseInt(process.env.TEST_DATABASE_CONNECT_TIMEOUT_MS ?? '', 10) || 90_000,
+      retryIntervalMs: 1_500,
+      maxAttemptsPerCandidate: 6,
+    })
+  } catch (error) {
+    console.error(
+      '❌ PostgreSQL への接続に失敗しました。`docker compose up` で DB サービスが起動しているか確認してください。',
+      error,
+    )
+    throw error
+  }
   dbPool = new Pool({ connectionString: resolvedDatabaseUrl })
   objectStorageClient = createObjectStorageTestClient(OBJECT_STORAGE_CONFIG)
   await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
 })
 
 afterAll(async () => {
-  await dbPool.end()
+  if (dbPool) {
+    await dbPool.end()
+  }
 })
 
 describe('Integration Test Suite', () => {
