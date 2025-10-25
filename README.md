@@ -399,9 +399,9 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 
 ## 6\. テスト方法 (How to Test)
 
-### 6.1 Collector サービスの単体テスト
+### 6.1 Collector サービスの検証
 
-`collector`サービス単体の動作を、RabbitMQ と連携して確認します。
+`collector`サービス向けのスタンドアロンテストスクリプト（`collector/test/standalone_test.ts`）は 2025-10-25 現在では廃止されています。単体動作を確認したい場合は Docker Compose 上で `rabbitmq` と `collector` を起動し、エンドポイントを手動で叩くか、もしくは統合テスト群（`integration_test`）を利用してください。
 
 1. **必要なサービスを起動:**
 
@@ -409,16 +409,15 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
    docker-compose up -d rabbitmq collector
    ```
 
-2. **テストスクリプトを実行:**
-   `collector`ディレクトリに移動し、依存パッケージをインストールしてからテストを実行します。
+2. **ヘルスチェックや動作の手動確認:**
+   例えば下記のように API 経由で疎通を確認できます。
 
    ```bash
-   cd collector
-   npm install
-   npm run test:standalone
+   curl http://localhost:3000/api/v1/health
    ```
 
-3. ターミナルに`✅ All tests passed successfully!`と表示されれば成功です。
+3. **広範な動作確認:**
+   `integration_test` プロジェクトのテストスイートを実行し、依存サービスを含めた挙動をまとめて検証できます。
 
 ### 6.2 エンドツーエンドテスト
 
