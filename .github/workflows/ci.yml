@@ -121,6 +121,13 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install Bun dependencies
         run: bun install --frozen-lockfile
+      - name: Prepare environment variables
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
+            printf '\nGEMINI_API_KEY=%s\n' "${{ secrets.GEMINI_API_KEY }}" >> .env
+          fi
       - name: Start docker-compose stack
         run: |
           set -euo pipefail
