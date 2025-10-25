@@ -1,7 +1,7 @@
 import { PoolClient } from 'pg';
 import { objectStorageClient } from '../../infrastructure/objectStorage';
 import { config } from '../../config/env';
-import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm';
+import { init as zstdInit } from '@bokuweb/zstd-wasm';
 import type { EventCorrectorJobPayload } from '../../app/schemas/job';
 import { dbPool } from '../../infrastructure/db';
 import { parsePayloadsAndExtractTriggerTimestampsUs } from './trigger_timestamps';
@@ -10,7 +10,6 @@ const zstdPromise = zstdInit().then(() => {
   console.log('✅ [ZSTD] WASM module initialized.');
 });
 
-const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any;
 const MAX_ALIGNMENT_ERROR_US = 500_000n; // 0.5 seconds tolerance for trigger alignment
 
 const bigintAbs = (value: bigint): bigint => (value < 0n ? -value : value);

@@ -7,22 +7,35 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from ..config.env import settings
-from .dependencies.auth import verify_owner_role
-from .schemas import AnalysisResponse, AnalysisResultSnapshot, ProductRecommendation
 from ..domain.analysis.orchestrator import run_full_analysis
 from ..infrastructure.db import get_latest_analysis_result, save_analysis_result
+from .dependencies.auth import verify_owner_role
+from .schemas import AnalysisResponse, AnalysisResultSnapshot, ProductRecommendation
 
 # --- ロギング設定 ---
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # --- FastAPIアプリケーション ---
 app = FastAPI(title="ERP Neuro-Marketing Service")
 
+
+def _build_health_response() -> JSONResponse:
+    """Generate a consistent health payload for both legacy and versioned endpoints."""
+    return JSONResponse(content={"status": "ok"})
+
+
 @app.get("/health", tags=["Health Check"], include_in_schema=False)
 async def health_check():
     """A simple endpoint to confirm the service is running."""
-    return JSONResponse(content={"status": "ok"})
+    return _build_health_response()
+
+
+@app.get("/api/v1/health", tags=["Health Check"], include_in_schema=False)
+async def health_check_v1():
+    """Versioned health endpoint kept in sync with /health."""
+    return _build_health_response()
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -34,10 +47,11 @@ async def startup_event():
     else:
         logger.info(f"Shared volume path is ready: {shared_path}")
 
+
 @app.post(
     "/api/v1/neuro-marketing/experiments/{experiment_id}/analyze",
     response_model=AnalysisResponse,
-    summary="指定された実験の脳波データを解析し、推奨事項を生成します。"
+    summary="指定された実験の脳波データを解析し、推奨事項を生成します。",
 )
 async def analyze_experiment(
     experiment_id: UUID,
@@ -58,7 +72,9 @@ async def analyze_experiment(
     """
     if not authorized:
         # このコードパスは通常 `verify_owner_role` によって防がれるが、念のため残す
-        raise HTTPException(status_code=403, detail="Forbidden: User is not the owner of this experiment.")
+        raise HTTPException(
+            status_code=403, detail="Forbidden: User is not the owner of this experiment."
+        )
 
     logger.info(f"Analysis requested for experiment_id: {experiment_id}")
 
@@ -75,7 +91,8 @@ async def analyze_experiment(
             save_analysis_result(analysis_response, x_user_id)
         except Exception as db_error:
             logger.error(
-                "Failed to save analysis result for experiment %s: %s. Returning response without persistence.",
+                "Failed to save analysis result for experiment %s: %s. "
+                "Returning response without persistence.",
                 experiment_id,
                 db_error,
                 exc_info=True,
@@ -88,8 +105,14 @@ async def analyze_experiment(
         raise http_exc
     except Exception as e:
         # 予期せぬ内部エラー
-        logger.exception(f"An unexpected error occurred during analysis for experiment_id: {experiment_id}")
-        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+        logger.exception(
+            "An unexpected error occurred during analysis for experiment_id: %s",
+            experiment_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"An internal error occurred: {str(e)}",
+        ) from e
 
 
 @app.get(
@@ -103,33 +126,42 @@ async def get_analysis_result(
     x_user_id: str = Header(..., alias="X-User-Id"),
 ):
     if not authorized:
-        raise HTTPException(status_code=403, detail="Forbidden: User is not the owner of this experiment.")
+        raise HTTPException(
+            status_code=403, detail="Forbidden: User is not the owner of this experiment."
+        )
 
-    logger.info("Latest analysis result requested for experiment %s by %s", experiment_id, x_user_id)
+    logger.info(
+        "Latest analysis result requested for experiment %s by %s", experiment_id, x_user_id
+    )
 
     record = get_latest_analysis_result(experiment_id)
     if not record:
-        raise HTTPException(status_code=404, detail="No completed analysis result found for this experiment.")
+        raise HTTPException(
+            status_code=404, detail="No completed analysis result found for this experiment."
+        )
 
     try:
-        recommendations = [ProductRecommendation(**rec) for rec in record['recommendations']]
+        recommendations = [ProductRecommendation(**rec) for rec in record["recommendations"]]
     except (ValidationError, TypeError, ValueError, KeyError) as validation_error:
         logger.error(
             "Failed to deserialize stored analysis result for experiment %s (analysis_id=%s)",
             experiment_id,
-            record['analysis_id'],
+            record["analysis_id"],
             exc_info=True,
         )
         raise HTTPException(
             status_code=500,
-            detail="The stored analysis result is corrupted. Please re-run the analysis or contact support.",
+            detail=(
+                "The stored analysis result is corrupted. Please re-run the analysis or "
+                "contact support."
+            ),
         ) from validation_error
 
     return AnalysisResultSnapshot(
-        analysis_id=record['analysis_id'],
-        experiment_id=record['experiment_id'],
-        summary=record['summary'],
+        analysis_id=record["analysis_id"],
+        experiment_id=record["experiment_id"],
+        summary=record["summary"],
         recommendations=recommendations,
-        generated_at=record['generated_at'],
-        requested_by_user_id=record['requested_by_user_id'],
+        generated_at=record["generated_at"],
+        requested_by_user_id=record["requested_by_user_id"],
     )

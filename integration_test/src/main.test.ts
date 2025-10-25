@@ -9,8 +9,31 @@ import { Buffer } from 'buffer'
 import neatCSV from 'neat-csv'
 import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_corrector/src/domain/services/trigger_timestamps'
 
+const shouldPersistBidsArtifacts =
+  (process.env.INTEGRATION_TEST_PERSIST_BIDS_OUTPUT ??
+    process.env.TEST_SAVE_BIDS_OUTPUT ??
+    '').toLowerCase() === 'true'
+
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
+
+const parseHostname = (value?: string) => {
+  if (!value) {
+    return undefined
+  }
+  try {
+    const url = new URL(value)
+    return url.hostname?.toLowerCase() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+const explicitBaseUrlFromEnv = (process.env.BASE_URL ?? process.env.TEST_BASE_URL)?.trim()
+const explicitBaseHostname = parseHostname(explicitBaseUrlFromEnv)
+
 const preferDockerHostnames =
-  (process.env.TEST_USE_DOCKER_HOSTNAMES ?? '').toLowerCase() === 'true'
+  (process.env.TEST_USE_DOCKER_HOSTNAMES ?? '').toLowerCase() === 'true' ||
+  (explicitBaseHostname ? !LOCAL_HOSTNAMES.has(explicitBaseHostname) : false)
 
 const DEFAULT_DB_HOST_CANDIDATES = [
   'localhost',
@@ -62,8 +85,11 @@ const baseHost = resolveHost({
 const basePort =
   process.env.TEST_BASE_PORT ?? process.env.NGINX_PORT ?? process.env.PORT ?? process.env.API_PORT
 const baseUrlFromEnv =
-  process.env.TEST_BASE_URL ??
-  (basePort ? `http://${baseHost}:${basePort}/api/v1` : `http://${baseHost}:8080/api/v1`)
+  explicitBaseUrlFromEnv && explicitBaseUrlFromEnv.length > 0
+    ? explicitBaseUrlFromEnv
+    : basePort
+      ? `http://${baseHost}:${basePort}/api/v1`
+      : `http://${baseHost}:8080/api/v1`
 const BASE_URL = baseUrlFromEnv ?? 'http://localhost:8080/api/v1'
 const API_ROOT = BASE_URL.replace(/\/api\/v1$/, '')
 
@@ -290,7 +316,7 @@ const serviceEndpointParts = parseEndpointParts(process.env.OBJECT_STORAGE_ENDPO
 let objectStorageEndpointHost = testEndpointParts.host ?? serviceEndpointParts.host ?? 'localhost'
 const endpointPortFromEnv = testEndpointParts.port ?? serviceEndpointParts.port
 
-if (!process.env.TEST_OBJECT_STORAGE_ENDPOINT) {
+if (!preferDockerHostnames && !process.env.TEST_OBJECT_STORAGE_ENDPOINT) {
   const normalizedHost = objectStorageEndpointHost?.toLowerCase()
   if (!normalizedHost || normalizedHost === 'object-storage') {
     objectStorageEndpointHost = 'localhost'
@@ -319,18 +345,10 @@ const OBJECT_STORAGE_CONFIG = {
     process.env.OBJECT_STORAGE_SECRET_KEY ??
     'storageadmin',
 }
-const OBJECT_STORAGE_RAW_DATA_BUCKET =
-  process.env.TEST_OBJECT_STORAGE_RAW_DATA_BUCKET ??
-  process.env.OBJECT_STORAGE_RAW_DATA_BUCKET ??
-  'raw-data'
 const OBJECT_STORAGE_MEDIA_BUCKET =
   process.env.TEST_OBJECT_STORAGE_MEDIA_BUCKET ??
   process.env.OBJECT_STORAGE_MEDIA_BUCKET ??
   'media'
-const BIDS_BUCKET =
-  process.env.TEST_OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
-  process.env.OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
-  'bids-exports'
 
 function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
   const client = new S3CompatibleClient({
@@ -1135,7 +1153,7 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
   ctx.bidsArchiveEntries = Object.keys(zip.files)
   ctx.zip = zip
   console.log(`✅ BIDS archive downloaded and contains ${ctx.bidsArchiveEntries.length} files.`)
-  if (ctx.bidsTaskId) {
+  if (ctx.bidsTaskId && shouldPersistBidsArtifacts) {
     const zipOutputPath = path.join(TEST_OUTPUT_DIR, `bids_task_${ctx.bidsTaskId}.zip`)
     await fs.writeFile(zipOutputPath, ctx.zipBuffer)
     const extractionDir = path.join(TEST_OUTPUT_DIR, `bids_task_${ctx.bidsTaskId}`)
@@ -1143,6 +1161,8 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
     ctx.bidsZipPath = zipOutputPath
     ctx.bidsExtractedDir = extractionDir
     console.log(`📁 BIDS archive extracted to ${extractionDir}`)
+  } else if (!shouldPersistBidsArtifacts) {
+    console.log('ℹ️ Skipping BIDS archive persistence per configuration.')
   }
 
   if (withEvents) {
@@ -1220,7 +1240,11 @@ beforeAll(async () => {
   await waitForHttpOk(`${API_ROOT}/api/v1/health`, {
     description: 'API gateway /api/v1/health endpoint',
   })
-  await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
+  if (shouldPersistBidsArtifacts) {
+    await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
+  } else {
+    console.log('ℹ️ BIDS archive persistence is disabled; skipping local extraction directory setup.')
+  }
 })
 
 afterAll(async () => {

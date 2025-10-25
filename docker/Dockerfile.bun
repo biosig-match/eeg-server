@@ -16,7 +16,7 @@ COPY session_manager/package.json ./session_manager/
 COPY stimulus_asset_processor/package.json ./stimulus_asset_processor/
 COPY observability_dashboard/package.json ./observability_dashboard/
 
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --no-cache
 
 FROM oven/bun:1.2.22-slim
 ARG SERVICE_NAME

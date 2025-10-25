@@ -3,10 +3,17 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
 
 from .base import AnalysisResult, RealtimeApplication
+
+ApplicationSource = (
+    RealtimeApplication
+    | type[RealtimeApplication]
+    | Iterable[RealtimeApplication]
+    | None
+)
 
 __all__ = ["AnalysisResult", "RealtimeApplication", "discover_applications"]
 
@@ -58,7 +65,7 @@ def _instantiate_from_module(module) -> Iterator[RealtimeApplication]:
         yield attr()
 
 
-def _invoke_factory(module, attribute: str) -> Iterable[RealtimeApplication | type[RealtimeApplication] | Iterable[RealtimeApplication] | None]:
+def _invoke_factory(module, attribute: str) -> Iterable[ApplicationSource]:
     factory = getattr(module, attribute, None)
     if factory is None:
         return ()
@@ -68,9 +75,9 @@ def _invoke_factory(module, attribute: str) -> Iterable[RealtimeApplication | ty
     return result  # type: ignore[return-value]
 
 
-def _normalise_instances(
-    value: Iterable[RealtimeApplication | type[RealtimeApplication] | Iterable[RealtimeApplication] | None] | RealtimeApplication | type[RealtimeApplication] | None,
-) -> Iterator[RealtimeApplication]:
+def _normalise_instances(value: ApplicationSource | Iterable[ApplicationSource]) -> Iterator[
+    RealtimeApplication
+]:
     if value is None:
         return iter(())
 
@@ -90,9 +97,7 @@ def _normalise_instances(
             elif inspect.isclass(item) and issubclass(item, RealtimeApplication):
                 instances.append(item())
             else:
-                raise TypeError(
-                    f"Unsupported realtime application entry: {item!r}"
-                )
+                raise TypeError(f"Unsupported realtime application entry: {item!r}")
         return iter(instances)
 
     raise TypeError(f"Unsupported realtime application entry: {value!r}")

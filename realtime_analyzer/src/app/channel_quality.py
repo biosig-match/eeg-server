@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
-
 import numpy as np
 
 from ..config.env import settings
@@ -11,7 +9,7 @@ from .types import ChannelQualityMeta
 class ChannelQualityTracker:
     """Accumulates per-channel quality statistics from streaming data."""
 
-    def __init__(self, ch_names: List[str], ch_types: List[str]) -> None:
+    def __init__(self, ch_names: list[str], ch_types: list[str]) -> None:
         self.ch_names = ch_names
         self.ch_types = ch_types
         self.num_channels = len(ch_names)
@@ -25,8 +23,8 @@ class ChannelQualityTracker:
         self.unknown_impedance_samples = np.zeros(self.num_channels, dtype=np.int64)
         self.flatline_detected = np.zeros(self.num_channels, dtype=bool)
         self._dirty = True
-        self._cached_bad_channels: List[str] = []
-        self._cached_report: Dict[str, ChannelQualityMeta] = {}
+        self._cached_bad_channels: list[str] = []
+        self._cached_report: dict[str, ChannelQualityMeta] = {}
 
     def update(self, signals: np.ndarray, impedances: np.ndarray) -> None:
         """Update per-channel quality statistics with a new batch of samples."""
@@ -66,13 +64,13 @@ class ChannelQualityTracker:
 
         self._dirty = True
 
-    def build_report(self) -> Tuple[List[str], Dict[str, ChannelQualityMeta]]:
+    def build_report(self) -> tuple[list[str], dict[str, ChannelQualityMeta]]:
         """Return bad channel list and channel quality report."""
         if not self._dirty:
             return self._cached_bad_channels, self._cached_report
 
-        report: Dict[str, ChannelQualityMeta] = {}
-        bad_channels: List[str] = []
+        report: dict[str, ChannelQualityMeta] = {}
+        bad_channels: list[str] = []
 
         for idx, name in enumerate(self.ch_names):
             ch_type = self.ch_types[idx]
@@ -80,10 +78,11 @@ class ChannelQualityTracker:
             zero_ratio = float(self.zero_samples[idx]) / total
             high_ratio = float(self.high_impedance_samples[idx]) / total
             unknown_ratio = float(self.unknown_impedance_samples[idx]) / total
-            reasons: List[str] = []
+            is_analysis_channel = bool(self.analysis_indices[idx])
+            reasons: list[str] = []
             status = "good"
 
-            if self.analysis_indices[idx]:
+            if is_analysis_channel:
                 if zero_ratio >= settings.channel_zero_ratio_threshold:
                     status = "bad"
                     reasons.append(f"zero-fill {zero_ratio:.0%}")
@@ -103,10 +102,10 @@ class ChannelQualityTracker:
             report[name] = {
                 "status": status,
                 "reasons": reasons,
-                "zero_ratio": zero_ratio if self.analysis_indices[idx] else 0.0,
-                "bad_impedance_ratio": high_ratio if self.analysis_indices[idx] else 0.0,
-                "unknown_impedance_ratio": unknown_ratio if self.analysis_indices[idx] else 0.0,
-                "flatline": bool(self.flatline_detected[idx]) if self.analysis_indices[idx] else False,
+                "zero_ratio": zero_ratio if is_analysis_channel else 0.0,
+                "bad_impedance_ratio": high_ratio if is_analysis_channel else 0.0,
+                "unknown_impedance_ratio": unknown_ratio if is_analysis_channel else 0.0,
+                "flatline": bool(self.flatline_detected[idx]) if is_analysis_channel else False,
                 "type": ch_type,
                 "has_warning": status != "bad" and bool(reasons),
             }

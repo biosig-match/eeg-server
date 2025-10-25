@@ -1,7 +1,6 @@
-from contextlib import contextmanager
 import json
+from contextlib import contextmanager
 from datetime import datetime
-from typing import List, Optional
 from uuid import UUID
 
 import psycopg2
@@ -9,6 +8,7 @@ from psycopg2.extras import DictCursor
 
 from ..app.schemas import AnalysisResponse, ProductRecommendation
 from ..config.env import settings
+
 
 @contextmanager
 def get_db_connection():
@@ -23,6 +23,7 @@ def get_db_connection():
     finally:
         conn.close()
 
+
 @contextmanager
 def get_db_cursor(conn):
     """Returns a dictionary cursor with guaranteed cleanup."""
@@ -32,13 +33,18 @@ def get_db_cursor(conn):
     finally:
         cur.close()
 
-def get_product_details_from_db(conn, experiment_id: UUID, file_names: List[str]) -> List[ProductRecommendation]:
+
+def get_product_details_from_db(
+    conn,
+    experiment_id: UUID,
+    file_names: list[str],
+) -> list[ProductRecommendation]:
     """
     Fetches detailed information for a list of stimulus file names within an experiment.
     """
     if not file_names:
         return []
-        
+
     with get_db_cursor(conn) as cur:
         query = """
             SELECT file_name, item_name, brand_name, description, category, gender
@@ -47,29 +53,40 @@ def get_product_details_from_db(conn, experiment_id: UUID, file_names: List[str]
         """
         cur.execute(query, (str(experiment_id), file_names))
         rows = cur.fetchall()
-        
+
         # Pydanticモデルに変換
         return [ProductRecommendation(**dict(row)) for row in rows]
 
 
 def save_analysis_result(result: AnalysisResponse, requested_by_user_id: str) -> None:
     payload = {
-        'summary': result.summary,
-        'recommendations': [rec.dict() for rec in result.recommendations],
+        "summary": result.summary,
+        "recommendations": [rec.dict() for rec in result.recommendations],
     }
 
     with get_db_connection() as conn:
         with get_db_cursor(conn) as cur:
             cur.execute(
                 """
-                INSERT INTO erp_analysis_results (experiment_id, requested_by_user_id, status, result_data, completed_at)
+                INSERT INTO erp_analysis_results (
+                    experiment_id,
+                    requested_by_user_id,
+                    status,
+                    result_data,
+                    completed_at
+                )
                 VALUES (%s, %s, %s, %s, NOW())
                 """,
-                (str(result.experiment_id), requested_by_user_id, 'completed', json.dumps(payload)),
+                (
+                    str(result.experiment_id),
+                    requested_by_user_id,
+                    "completed",
+                    json.dumps(payload),
+                ),
             )
 
 
-def get_latest_analysis_result(experiment_id: UUID) -> Optional[dict]:
+def get_latest_analysis_result(experiment_id: UUID) -> dict | None:
     with get_db_connection() as conn:
         with get_db_cursor(conn) as cur:
             cur.execute(
@@ -92,14 +109,14 @@ def get_latest_analysis_result(experiment_id: UUID) -> Optional[dict]:
             if not row:
                 return None
 
-            result_data = row['result_data'] or {}
-            generated_at: Optional[datetime] = row['completed_at'] or row['created_at']
+            result_data = row["result_data"] or {}
+            generated_at: datetime | None = row["completed_at"] or row["created_at"]
 
             return {
-                'analysis_id': row['analysis_id'],
-                'experiment_id': UUID(str(row['experiment_id'])),
-                'requested_by_user_id': row['requested_by_user_id'],
-                'summary': result_data.get('summary', ''),
-                'recommendations': result_data.get('recommendations', []),
-                'generated_at': generated_at,
+                "analysis_id": row["analysis_id"],
+                "experiment_id": UUID(str(row["experiment_id"])),
+                "requested_by_user_id": row["requested_by_user_id"],
+                "summary": result_data.get("summary", ""),
+                "recommendations": result_data.get("recommendations", []),
+                "generated_at": generated_at,
             }

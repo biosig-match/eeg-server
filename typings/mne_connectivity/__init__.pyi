@@ -1,0 +1,3 @@
+from typing import Any
+
+def spectral_connectivity_epochs(*args: Any, **kwargs: Any) -> Any: ...

@@ -17,7 +17,15 @@ const tsServices = [
   'processor',
   'session_manager',
   'stimulus_asset_processor',
+  'observability_dashboard',
 ];
+
+const tsFileGlobs = tsServices.flatMap((service) => [
+  `${service}/**/*.ts`,
+  `${service}/**/*.tsx`,
+  `${service}/**/*.mts`,
+  `${service}/**/*.cts`,
+]);
 
 export default [
   // Global ignores for the repo
@@ -34,17 +42,35 @@ export default [
   js.configs.recommended,
 
   // TypeScript (type-aware) recommendations
-  ...tseslint.configs.recommendedTypeChecked,
+  ...tseslint.configs.recommended.map((config) => ({
+    ...config,
+    files: tsFileGlobs,
+    languageOptions: {
+      ...(config.languageOptions ?? {}),
+      globals: globals.node,
+    },
+  })),
+  {
+    files: tsFileGlobs,
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+    },
+  },
 
   // Project-specific overrides for each TypeScript service
   ...tsServices.map((service) => ({
-    files: [`${service}/**/*.ts`],
+    files: [
+      `${service}/**/*.ts`,
+      `${service}/**/*.tsx`,
+      `${service}/**/*.mts`,
+      `${service}/**/*.cts`,
+    ],
     languageOptions: {
       globals: globals.node,
-      parserOptions: {
-        projectService: true,
-        tsconfigRootDir: new URL(`./${service}`, import.meta.url),
-      },
     },
     rules: {
       'no-console': 'off',

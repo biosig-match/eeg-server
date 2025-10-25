@@ -1,0 +1,43 @@
+name: Security Scans
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'
+  pull_request:
+    branches:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  trivy:
+    name: Trivy Vulnerability Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy (filesystem)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          format: table
+          ignore-unfixed: ${{ github.event_name == 'schedule' }}
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          exit-code: ${{ github.event_name == 'schedule' && '1' || '0' }}
+
+  dependency_review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Review dependencies
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary: true

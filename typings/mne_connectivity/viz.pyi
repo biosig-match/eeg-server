@@ -1,0 +1,3 @@
+from typing import Any
+
+def plot_connectivity_circle(*args: Any, **kwargs: Any) -> tuple[Any, Any]: ...

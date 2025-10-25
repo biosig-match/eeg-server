@@ -1,13 +1,16 @@
-import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
+import amqp from 'amqplib'
+import type { ConsumeMessage } from 'amqplib'
 import { config } from '../config/env'
 import { eventCorrectorJobPayloadSchema } from '../app/schemas/job'
 import { handleEventCorrectorJob } from '../domain/services/corrector'
 import type { EventCorrectorJobPayload } from '../app/schemas/job'
 
-let amqpConnection: Connection | null = null
-let amqpChannel: Channel | null = null
+type AmqpConnection = Awaited<ReturnType<typeof amqp.connect>>
+type AmqpChannel = Awaited<ReturnType<AmqpConnection['createChannel']>>
+
+let amqpConnection: AmqpConnection | null = null
+let amqpChannel: AmqpChannel | null = null
 let consumerTag: string | null = null
-let isConsuming = false
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 async function onMessage(msg: ConsumeMessage | null) {
@@ -75,7 +78,6 @@ export async function startConsumer(): Promise<void> {
       console.error('[RabbitMQ] Connection closed. Attempting to reconnect...')
       amqpConnection = null
       amqpChannel = null
-      isConsuming = false
       consumerTag = null
       scheduleReconnect()
     })
@@ -87,7 +89,6 @@ export async function startConsumer(): Promise<void> {
     channel.on('close', () => {
       console.warn('[RabbitMQ] Channel closed. Attempting to reconnect...')
       amqpChannel = null
-      isConsuming = false
       consumerTag = null
       scheduleReconnect()
     })
@@ -101,7 +102,6 @@ export async function startConsumer(): Promise<void> {
 
     const consumer = await channel.consume(queue, onMessage)
     consumerTag = consumer.consumerTag
-    isConsuming = true
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -111,7 +111,6 @@ export async function startConsumer(): Promise<void> {
   } catch (error) {
     amqpConnection = null
     amqpChannel = null
-    isConsuming = false
     consumerTag = null
     throw error
   }
@@ -147,7 +146,6 @@ export async function shutdownQueue(): Promise<void> {
     console.error('[RabbitMQ] Error cancelling consumer during shutdown.', error)
   } finally {
     consumerTag = null
-    isConsuming = false
   }
 
   try {

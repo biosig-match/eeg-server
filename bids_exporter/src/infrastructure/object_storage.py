@@ -1,8 +1,8 @@
 import asyncio
+
 from minio import Minio as S3CompatibleClient
 
 from ..config.env import settings
-
 
 object_storage_client = S3CompatibleClient(
     endpoint=f"{settings.object_storage_endpoint}:{settings.object_storage_port}",

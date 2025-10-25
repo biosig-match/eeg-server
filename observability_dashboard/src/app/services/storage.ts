@@ -30,10 +30,6 @@ const objectStorageClient = new S3CompatibleClient({
   secretKey: config.OBJECT_STORAGE_SECRET_KEY,
 })
 
-function createListObjectsStream(bucketName: string, prefix = '', recursive = false) {
-  return objectStorageClient.listObjectsV2(bucketName, prefix, recursive)
-}
-
 export { objectStorageClient }
 
 export async function checkObjectStorageHealth(

@@ -151,20 +151,22 @@ export async function buildGraphSnapshot(): Promise<GraphSnapshot> {
   const nodes: GraphNode[] = []
 
   for (const service of services) {
-    const status =
-      service.id === 'rabbitmq'
-        ? rabbitStatus.healthy
-          ? { level: 'ok', checkedAt: rabbitStatus.checkedAt }
-          : { level: 'error', detail: rabbitStatus.error, checkedAt: rabbitStatus.checkedAt }
-        : service.id === 'postgres'
-          ? dbHealth.healthy
-            ? { level: 'ok', checkedAt: dbHealth.checkedAt, detail: dbHealth.version }
-            : { level: 'error', detail: dbHealth.error, checkedAt: dbHealth.checkedAt }
-        : service.id === 'object-storage'
-          ? objectStorageHealth.healthy
-            ? { level: 'ok', checkedAt: objectStorageHealth.checkedAt }
-            : { level: 'error', detail: objectStorageHealth.error, checkedAt: objectStorageHealth.checkedAt }
-            : serviceStatusMap.get(service.id) ?? { level: 'unknown' }
+    let status: NodeStatus
+    if (service.id === 'rabbitmq') {
+      status = rabbitStatus.healthy
+        ? { level: 'ok', checkedAt: rabbitStatus.checkedAt }
+        : { level: 'error', detail: rabbitStatus.error, checkedAt: rabbitStatus.checkedAt }
+    } else if (service.id === 'postgres') {
+      status = dbHealth.healthy
+        ? { level: 'ok', checkedAt: dbHealth.checkedAt, detail: dbHealth.version }
+        : { level: 'error', detail: dbHealth.error, checkedAt: dbHealth.checkedAt }
+    } else if (service.id === 'object-storage') {
+      status = objectStorageHealth.healthy
+        ? { level: 'ok', checkedAt: objectStorageHealth.checkedAt }
+        : { level: 'error', detail: objectStorageHealth.error, checkedAt: objectStorageHealth.checkedAt }
+    } else {
+      status = serviceStatusMap.get(service.id) ?? { level: 'unknown' }
+    }
 
     nodes.push({
       id: service.id,

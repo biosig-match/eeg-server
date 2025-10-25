@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import struct
-from typing import Optional
 
 import numpy as np
 
 
-def parse_eeg_binary_payload_v4(data: bytes) -> Optional[dict]:
+def parse_eeg_binary_payload_v4(data: bytes) -> dict | None:
     """Parse the EEG payload version 4 into header, signals, and impedance arrays."""
     try:
         header_base_size = 4  # version(1) + num_channels(1) + reserved(2)

@@ -1,11 +1,11 @@
-from typing import Dict, List, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 import mne
 
 
 class ChannelQualityMeta(TypedDict):
     status: str
-    reasons: List[str]
+    reasons: list[str]
     zero_ratio: float
     bad_impedance_ratio: float
     unknown_impedance_ratio: float
@@ -15,10 +15,10 @@ class ChannelQualityMeta(TypedDict):
 
 
 class DeviceProfile(TypedDict):
-    ch_names: List[str]
-    ch_types: List[str]
+    ch_names: list[str]
+    ch_types: list[str]
     sampling_rate: float
     lsb_to_volts: float
     mne_info: mne.Info
-    bad_channels: NotRequired[List[str]]
-    channel_report: NotRequired[Dict[str, ChannelQualityMeta]]
+    bad_channels: NotRequired[list[str]]
+    channel_report: NotRequired[dict[str, ChannelQualityMeta]]

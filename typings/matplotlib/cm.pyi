@@ -1,0 +1,3 @@
+from typing import Any
+
+def get_cmap(name: str, lut: int | None = ...) -> Any: ...

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from flask import Flask, jsonify
 
 from .applications import discover_applications
@@ -17,11 +19,27 @@ def _ensure_background_threads() -> None:
     host.start_background_threads()
 
 
-@app.route("/health", methods=["GET"])
-def health_check():
+def _build_health_payload() -> tuple[dict[str, str], int]:
     status = "ok" if host.rabbitmq_connected() else "unhealthy"
     status_code = 200 if status == "ok" else 503
-    return jsonify({"status": status}), status_code
+    return {"status": status}, status_code
+
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    payload, status_code = _build_health_payload()
+    return jsonify(payload), status_code
+
+
+@app.route("/api/v1/health", methods=["GET"])
+def health_check_v1():
+    payload, status_code = _build_health_payload()
+    extended_payload = {
+        **payload,
+        "service": "realtime-analyzer",
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    return jsonify(extended_payload), status_code
 
 
 @app.route("/api/v1/applications", methods=["GET"])

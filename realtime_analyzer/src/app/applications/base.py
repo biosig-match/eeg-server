@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 
 from ..state import UserState
 
-AnalysisResult = Dict[str, Any]
+AnalysisResult = dict[str, Any]
 
 
 class RealtimeApplication(ABC):
@@ -23,7 +23,7 @@ class RealtimeApplication(ABC):
         user_id: str,
         state: UserState,
         window: np.ndarray,
-    ) -> Optional[AnalysisResult]:
+    ) -> AnalysisResult | None:
         """Run application-specific analysis and return serialisable results."""
 
     # Provide empty defaults so subclasses only override what they need.

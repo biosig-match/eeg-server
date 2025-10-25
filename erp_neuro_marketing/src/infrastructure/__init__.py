@@ -1,4 +1,4 @@
-from .bids_client import request_bids_creation, BidsCreationError
+from .bids_client import BidsCreationError, request_bids_creation
 from .db import get_db_connection, get_db_cursor, get_product_details_from_db
 
 __all__ = [
