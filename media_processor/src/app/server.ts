@@ -1,4 +1,5 @@
-import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
+import amqp from 'amqplib'
+import type { ConsumeMessage } from 'amqplib'
 import { Client as S3CompatibleClient } from 'minio'
 import { Pool } from 'pg'
 import path from 'path'
@@ -16,8 +17,11 @@ import {
 
 const PREFETCH_COUNT = config.MEDIA_PREFETCH
 
-let amqpConnection: Connection | null = null
-let amqpChannel: Channel | null = null
+type AmqpConnection = Awaited<ReturnType<typeof amqp.connect>>
+type AmqpChannel = Awaited<ReturnType<AmqpConnection['createChannel']>>
+
+let amqpConnection: AmqpConnection | null = null
+let amqpChannel: AmqpChannel | null = null
 let consumerTag: string | null = null
 let isConsuming = false
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -216,8 +220,8 @@ async function connectRabbitMQ() {
     attempt += 1
     try {
       console.log(`📡 [RabbitMQ] Connecting (attempt ${attempt})...`)
-      amqpConnection = await amqp.connect(config.RABBITMQ_URL)
-      amqpConnection.on('close', () => {
+      const connection = await amqp.connect(config.RABBITMQ_URL)
+      connection.on('close', () => {
         console.error('❌ [RabbitMQ] Connection closed. Reconnecting...')
         amqpConnection = null
         amqpChannel = null
@@ -225,11 +229,13 @@ async function connectRabbitMQ() {
         consumerTag = null
         scheduleReconnect()
       })
-      amqpConnection.on('error', (error) => {
+      connection.on('error', (error) => {
         console.error('❌ [RabbitMQ] Connection error:', error)
       })
-      amqpChannel = await amqpConnection.createChannel()
-      await amqpChannel.assertQueue(config.MEDIA_PROCESSING_QUEUE, { durable: true })
+      const channel = await connection.createChannel()
+      await channel.assertQueue(config.MEDIA_PROCESSING_QUEUE, { durable: true })
+      amqpConnection = connection
+      amqpChannel = channel
       lastRabbitConnectedAt = new Date()
       if (reconnectTimer) {
         clearTimeout(reconnectTimer)
