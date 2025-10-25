@@ -9,18 +9,328 @@ import { Buffer } from 'buffer'
 import neatCSV from 'neat-csv'
 import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_corrector/src/domain/services/trigger_timestamps'
 
-const BASE_URL = 'http://localhost:8080/api/v1'
-const DATABASE_URL = 'postgres://admin:password@localhost:5432/eeg_data'
-const OBJECT_STORAGE_CONFIG = {
-  endPoint: 'localhost',
-  port: 8333,
-  useSSL: false,
-  accessKey: 'storageadmin',
-  secretKey: 'storageadmin',
+const preferDockerHostnames =
+  (process.env.TEST_USE_DOCKER_HOSTNAMES ?? '').toLowerCase() === 'true'
+
+const DEFAULT_DB_HOST_CANDIDATES = [
+  'localhost',
+  '127.0.0.1',
+  'db',
+  'postgres',
+  'postgresql',
+  'timescaledb',
+]
+
+function resolveHost({
+  testValue,
+  serviceValue,
+  defaultValue,
+  dockerOnlyHostnames,
+}: {
+  testValue?: string
+  serviceValue?: string
+  defaultValue: string
+  dockerOnlyHostnames: string[]
+}) {
+  if (testValue && testValue.trim().length > 0) {
+    return testValue
+  }
+
+  const resolvedService = serviceValue?.trim()
+  if (!resolvedService) {
+    return defaultValue
+  }
+
+  if (preferDockerHostnames) {
+    return resolvedService
+  }
+
+  const normalized = resolvedService.toLowerCase()
+  if (dockerOnlyHostnames.includes(normalized)) {
+    return defaultValue
+  }
+
+  return resolvedService
 }
-const OBJECT_STORAGE_RAW_DATA_BUCKET = 'raw-data'
-const OBJECT_STORAGE_MEDIA_BUCKET = 'media'
-const BIDS_BUCKET = 'bids-exports'
+
+const baseHost = resolveHost({
+  testValue: process.env.TEST_BASE_HOST,
+  serviceValue: process.env.NGINX_HOST,
+  defaultValue: 'localhost',
+  dockerOnlyHostnames: ['nginx'],
+})
+const basePort =
+  process.env.TEST_BASE_PORT ?? process.env.NGINX_PORT ?? process.env.PORT ?? process.env.API_PORT
+const baseUrlFromEnv =
+  process.env.TEST_BASE_URL ??
+  (basePort ? `http://${baseHost}:${basePort}/api/v1` : `http://${baseHost}:8080/api/v1`)
+const BASE_URL = baseUrlFromEnv ?? 'http://localhost:8080/api/v1'
+const API_ROOT = BASE_URL.replace(/\/api\/v1$/, '')
+
+const resolvedDbConfig = {
+  user: process.env.TEST_POSTGRES_USER ?? process.env.POSTGRES_USER ?? 'admin',
+  password: process.env.TEST_POSTGRES_PASSWORD ?? process.env.POSTGRES_PASSWORD ?? 'password',
+  host: resolveHost({
+    testValue: process.env.TEST_POSTGRES_HOST,
+    serviceValue: process.env.POSTGRES_HOST,
+    defaultValue: 'localhost',
+    dockerOnlyHostnames: ['db', 'postgres', 'postgresql', 'timescaledb'],
+  }),
+  port: process.env.TEST_POSTGRES_PORT ?? process.env.POSTGRES_PORT ?? '5432',
+  database: process.env.TEST_POSTGRES_DB ?? process.env.POSTGRES_DB ?? 'eeg_data',
+}
+const databaseHostCandidates = Array.from(
+  new Set(
+    [
+      resolvedDbConfig.host,
+      process.env.TEST_POSTGRES_HOST,
+      process.env.POSTGRES_HOST,
+    ]
+      .flatMap((value) => {
+        const trimmed = value?.trim()
+        return trimmed ? [trimmed] : []
+      })
+      .concat(DEFAULT_DB_HOST_CANDIDATES)
+      .filter((value) => value.length > 0),
+  ),
+)
+const databaseUrlCandidates = Array.from(
+  new Set(
+    [
+      process.env.TEST_DATABASE_URL,
+      process.env.DATABASE_URL,
+      ...databaseHostCandidates.map(
+        (host) =>
+          `postgres://${resolvedDbConfig.user}:${resolvedDbConfig.password}@${host}:${resolvedDbConfig.port}/${resolvedDbConfig.database}`,
+      ),
+    ].filter((value): value is string => Boolean(value && value.length > 0)),
+  ),
+)
+const DEFAULT_DATABASE_URL =
+  databaseUrlCandidates[databaseUrlCandidates.length - 1] ??
+  'postgres://admin:password@localhost:5432/eeg_data'
+const DATABASE_URL_CANDIDATES =
+  databaseUrlCandidates.length > 0 ? databaseUrlCandidates : [DEFAULT_DATABASE_URL]
+let resolvedDatabaseUrl = DEFAULT_DATABASE_URL
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+const defaultDependencyTimeoutMs =
+  Number.parseInt(process.env.TEST_DEPENDENCY_READY_TIMEOUT_MS ?? '', 10) || 120_000
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeoutMs?: number } = {},
+): Promise<Response> {
+  const { timeoutMs = 5_000, ...init } = options
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function waitForHttpOk(
+  url: string,
+  {
+    timeoutMs = defaultDependencyTimeoutMs,
+    intervalMs = 2_000,
+    expectedStatus = 200,
+    description = url,
+  }: {
+    timeoutMs?: number
+    intervalMs?: number
+    expectedStatus?: number
+    description?: string
+  } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let attempt = 0
+  while (Date.now() < deadline) {
+    attempt += 1
+    try {
+      const response = await fetchWithTimeout(url, { timeoutMs: Math.min(5_000, intervalMs) })
+      if (response.status === expectedStatus) {
+        if (attempt > 1) {
+          console.log(`✅ ${description} became ready after ${attempt} attempts.`)
+        }
+        return
+      }
+      console.warn(
+        `ℹ️  ${description} responded with status ${response.status}. Retrying in ${intervalMs} ms...`,
+      )
+    } catch (error) {
+      console.warn(
+        `ℹ️  ${description} is not reachable yet (${(error as Error).message}). Retrying in ${intervalMs} ms...`,
+      )
+    }
+    await sleep(intervalMs)
+  }
+  throw new Error(`Timed out waiting for ${description} to become ready within ${timeoutMs} ms.`)
+}
+
+async function waitForObjectStorageReady(
+  client: ReturnType<typeof createObjectStorageTestClient>,
+  {
+    timeoutMs = defaultDependencyTimeoutMs,
+    intervalMs = 2_000,
+    description = `object storage (${OBJECT_STORAGE_CONFIG.endPoint}:${OBJECT_STORAGE_CONFIG.port})`,
+  }: {
+    timeoutMs?: number
+    intervalMs?: number
+    description?: string
+  } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let attempt = 0
+  while (Date.now() < deadline) {
+    attempt += 1
+    try {
+      await client.ping()
+      console.log(`✅ ${description} is reachable (attempt ${attempt}).`)
+      return
+    } catch (error) {
+      console.warn(
+        `ℹ️  ${description} not ready yet (${(error as Error).message}). Retrying in ${intervalMs} ms...`,
+      )
+    }
+    await sleep(intervalMs)
+  }
+  throw new Error(`Timed out waiting for ${description} to become reachable within ${timeoutMs} ms.`)
+}
+
+async function resolveDatabaseUrlWithFallbacks(
+  candidates: readonly string[],
+  options: {
+    timeoutMs?: number
+    retryIntervalMs?: number
+    maxAttemptsPerCandidate?: number
+  } = {},
+): Promise<string> {
+  if (!candidates.length) {
+    throw new Error('No database connection string candidates provided.')
+  }
+
+  const {
+    timeoutMs = 60_000,
+    retryIntervalMs = 1_000,
+    maxAttemptsPerCandidate = 5,
+  } = options
+  const startTime = Date.now()
+  let lastError: unknown = null
+
+  for (const candidate of candidates) {
+    for (let attempt = 1; attempt <= Math.max(1, maxAttemptsPerCandidate); attempt += 1) {
+      if (Date.now() - startTime > timeoutMs) {
+        break
+      }
+      const pool = new Pool({ connectionString: candidate, max: 1 })
+      try {
+        await pool.query('SELECT 1')
+        await pool.end()
+        return candidate
+      } catch (error) {
+        lastError = error
+        await pool.end().catch(() => {
+          /* swallow */
+        })
+        if (attempt < maxAttemptsPerCandidate) {
+          await sleep(retryIntervalMs)
+        }
+      }
+    }
+    if (Date.now() - startTime > timeoutMs) {
+      break
+    }
+  }
+
+  const uniqueCandidates = Array.from(new Set(candidates))
+  const errorMessage =
+    uniqueCandidates.length === 1
+      ? `Failed to connect to PostgreSQL at ${uniqueCandidates[0]} within ${timeoutMs} ms.`
+      : `Failed to connect to PostgreSQL using any of the configured endpoints within ${timeoutMs} ms. Tried: ${uniqueCandidates.join(
+          ', ',
+        )}`
+
+  const error = new Error(errorMessage)
+  ;(error as Error & { cause?: unknown }).cause = lastError ?? undefined
+  throw error
+}
+
+function parseEndpointParts(endpoint?: string) {
+  if (!endpoint) {
+    return { host: undefined as string | undefined, port: undefined as string | undefined }
+  }
+
+  if (endpoint.includes('://')) {
+    try {
+      const url = new URL(endpoint)
+      return {
+        host: url.hostname || undefined,
+        port: url.port || undefined,
+      }
+    } catch {
+      // フォーマットエラー時は従来ロジックにフォールバック
+    }
+  }
+
+  const [hostPart, portPart] = endpoint.split(':')
+  if (portPart === undefined) {
+    return { host: hostPart || undefined, port: undefined }
+  }
+
+  return { host: hostPart || undefined, port: portPart || undefined }
+}
+
+const testEndpointParts = parseEndpointParts(process.env.TEST_OBJECT_STORAGE_ENDPOINT)
+const serviceEndpointParts = parseEndpointParts(process.env.OBJECT_STORAGE_ENDPOINT)
+
+let objectStorageEndpointHost = testEndpointParts.host ?? serviceEndpointParts.host ?? 'localhost'
+const endpointPortFromEnv = testEndpointParts.port ?? serviceEndpointParts.port
+
+if (!process.env.TEST_OBJECT_STORAGE_ENDPOINT) {
+  const normalizedHost = objectStorageEndpointHost?.toLowerCase()
+  if (!normalizedHost || normalizedHost === 'object-storage') {
+    objectStorageEndpointHost = 'localhost'
+  }
+}
+
+const resolvedObjectStoragePort =
+  process.env.TEST_OBJECT_STORAGE_PORT ??
+  process.env.OBJECT_STORAGE_PORT ??
+  endpointPortFromEnv ??
+  undefined
+const parsedObjectStoragePort = resolvedObjectStoragePort ? Number(resolvedObjectStoragePort) : NaN
+const OBJECT_STORAGE_CONFIG = {
+  endPoint: objectStorageEndpointHost,
+  port: Number.isFinite(parsedObjectStoragePort) ? parsedObjectStoragePort : 8333,
+  useSSL:
+    (process.env.TEST_OBJECT_STORAGE_USE_SSL ??
+      process.env.OBJECT_STORAGE_USE_SSL ??
+      'false') === 'true',
+  accessKey:
+    process.env.TEST_OBJECT_STORAGE_ACCESS_KEY ??
+    process.env.OBJECT_STORAGE_ACCESS_KEY ??
+    'storageadmin',
+  secretKey:
+    process.env.TEST_OBJECT_STORAGE_SECRET_KEY ??
+    process.env.OBJECT_STORAGE_SECRET_KEY ??
+    'storageadmin',
+}
+const OBJECT_STORAGE_RAW_DATA_BUCKET =
+  process.env.TEST_OBJECT_STORAGE_RAW_DATA_BUCKET ??
+  process.env.OBJECT_STORAGE_RAW_DATA_BUCKET ??
+  'raw-data'
+const OBJECT_STORAGE_MEDIA_BUCKET =
+  process.env.TEST_OBJECT_STORAGE_MEDIA_BUCKET ??
+  process.env.OBJECT_STORAGE_MEDIA_BUCKET ??
+  'media'
+const BIDS_BUCKET =
+  process.env.TEST_OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
+  process.env.OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
+  'bids-exports'
 
 function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
   const client = new S3CompatibleClient({
@@ -31,17 +341,34 @@ function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
     secretKey: config.secretKey,
   })
 
+  const ensureBucket = async (bucketName: string) => {
+    const exists = await client.bucketExists(bucketName).catch(() => false)
+    if (!exists) {
+      await client.makeBucket(bucketName)
+    }
+  }
+
   return {
+    async ping(): Promise<void> {
+      await client.listBuckets()
+    },
+    async bucketExists(bucketName: string): Promise<boolean> {
+      try {
+        return await client.bucketExists(bucketName)
+      } catch {
+        return false
+      }
+    },
+    async ensureBucket(bucketName: string): Promise<void> {
+      await ensureBucket(bucketName)
+    },
     async fPutObject(
       bucketName: string,
       objectId: string,
       filePath: string,
       metadata: Record<string, string> = {},
     ): Promise<void> {
-      const exists = await client.bucketExists(bucketName).catch(() => false)
-      if (!exists) {
-        await client.makeBucket(bucketName)
-      }
+      await ensureBucket(bucketName)
       await client.fPutObject(bucketName, objectId, filePath, metadata)
     },
   }
@@ -292,8 +619,6 @@ type ObjectStorageTestClient = ReturnType<typeof createObjectStorageTestClient>
 
 let objectStorageClient: ObjectStorageTestClient
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
 async function pollForDbStatus(
   query: string,
   params: any[],
@@ -487,6 +812,11 @@ describe('Trigger Extraction Utility', () => {
 })
 
 async function resetDatabase() {
+  if (!dbPool) {
+    throw new Error(
+      'Database pool has not been initialised. Ensure docker compose services are running before executing integration tests.',
+    )
+  }
   await dbPool.query(
     'TRUNCATE TABLE erp_analysis_results, session_object_links, session_events, images, audio_clips, raw_data_objects, sessions, experiment_participants, experiment_stimuli, export_tasks, experiments CASCADE',
   )
@@ -867,13 +1197,36 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
 // --- Test Suite ---
 beforeAll(async () => {
   await initZstd()
-  dbPool = new Pool({ connectionString: DATABASE_URL })
+  try {
+    resolvedDatabaseUrl = await resolveDatabaseUrlWithFallbacks(DATABASE_URL_CANDIDATES, {
+      timeoutMs:
+        Number.parseInt(process.env.TEST_DATABASE_CONNECT_TIMEOUT_MS ?? '', 10) || 90_000,
+      retryIntervalMs: 1_500,
+      maxAttemptsPerCandidate: 6,
+    })
+  } catch (error) {
+    console.error(
+      '❌ PostgreSQL への接続に失敗しました。`docker compose up` で DB サービスが起動しているか確認してください。',
+      error,
+    )
+    throw error
+  }
+  dbPool = new Pool({ connectionString: resolvedDatabaseUrl })
   objectStorageClient = createObjectStorageTestClient(OBJECT_STORAGE_CONFIG)
+  await waitForObjectStorageReady(objectStorageClient)
+  await waitForHttpOk(`${API_ROOT}/health`, {
+    description: 'API gateway /health endpoint',
+  })
+  await waitForHttpOk(`${API_ROOT}/api/v1/health`, {
+    description: 'API gateway /api/v1/health endpoint',
+  })
   await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
 })
 
 afterAll(async () => {
-  await dbPool.end()
+  if (dbPool) {
+    await dbPool.end()
+  }
 })
 
 describe('Integration Test Suite', () => {

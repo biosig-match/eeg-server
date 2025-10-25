@@ -22,8 +22,13 @@ integration_test/test-output
 !.vscode/settings.json
 !.vscode/extensions.json
 
-# OS
+# OS / dotenv
 .env
+.env.local
+.env.development.local
+.env.staging.local
+.env.production.local
+.env.preview.local
 .DS_Store
 .venv/
 bench-results/
