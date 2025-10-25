@@ -1,22 +1,22 @@
 import logging
 from pathlib import Path
-from typing import Optional
 
-import pandas as pd
 import mne
+import pandas as pd
 from mne_bids import BIDSPath, read_raw_bids
 
 # --- ロガー設定 ---
 logger = logging.getLogger(__name__)
 
-def _sanitize_task_name(raw_task: Optional[str], default_task: str) -> str:
+
+def _sanitize_task_name(raw_task: str | None, default_task: str) -> str:
     """Sanitize the task name to match the naming used during BIDS export."""
-    candidate = (raw_task or '').strip()
+    candidate = (raw_task or "").strip()
     if not candidate:
         candidate = default_task
 
-    sanitized = candidate.replace('_', '').replace('-', '').replace(' ', '')
-    return sanitized or 'defaulttask'
+    sanitized = candidate.replace("_", "").replace("-", "").replace(" ", "")
+    return sanitized or "defaulttask"
 
 
 def create_epochs_from_bids(
@@ -39,26 +39,26 @@ def create_epochs_from_bids(
     :return: 結合されたMNE Epochsオブジェクト。対象データがない場合はNone。
     """
     all_epochs = []
-    
+
     for row in sessions_df.itertuples(index=False):
-        subject_id = getattr(row, 'user_id').replace('-', '')
-        session_index = getattr(row, 'session_index', None)
+        subject_id = row.user_id.replace("-", "")
+        session_index = getattr(row, "session_index", None)
         if session_index is None:
             logger.warning(
                 "Session %s is missing a session_index. Skipping as BIDS alignment is ambiguous.",
-                getattr(row, 'session_id', 'unknown'),
+                getattr(row, "session_id", "unknown"),
             )
             continue
 
         session_label = str(session_index)
-        task_name = _sanitize_task_name(getattr(row, 'session_type', None), default_task)
+        task_name = _sanitize_task_name(getattr(row, "session_type", None), default_task)
 
         try:
             bids_path = BIDSPath(
                 subject=subject_id,
                 session=session_label,
                 task=task_name,
-                datatype='eeg',
+                datatype="eeg",
                 root=bids_root_path,
             )
 
@@ -81,40 +81,41 @@ def create_epochs_from_bids(
             picks = mne.pick_types(raw.info, eeg=True, eog=True, emg=True, meg=False, stim=False)
             if len(picks) == 0:
                 logger.warning(
-                    "No usable EEG/EMG/EOG channels remain after dropping bad channels for %s. Skipping.",
+                    "No usable EEG/EMG/EOG channels remain after dropping bad channels for %s. "
+                    "Skipping.",
                     bids_path,
                 )
                 continue
             raw.pick(picks=picks)
 
-            events_path = bids_path.copy().update(suffix='events', extension='.tsv')
+            events_path = bids_path.copy().update(suffix="events", extension=".tsv")
             if not events_path.fpath.exists():
                 logger.warning("No events file found for %s. Skipping this session.", bids_path)
                 continue
 
-            events_df = pd.read_csv(events_path.fpath, sep='\t')
+            events_df = pd.read_csv(events_path.fpath, sep="\t")
 
             events = []
             event_id_map = {}
 
-            unique_trial_types = events_df['trial_type'].unique()
+            unique_trial_types = events_df["trial_type"].unique()
             for idx, trial_type in enumerate(unique_trial_types, 1):
                 event_id_map[trial_type] = idx
 
             for _, event_row in events_df.iterrows():
-                onset_sample = int(event_row['onset'] * raw.info['sfreq'])
-                event_id = event_id_map[event_row['trial_type']]
+                onset_sample = int(event_row["onset"] * raw.info["sfreq"])
+                event_id = event_id_map[event_row["trial_type"]]
                 events.append([onset_sample, 0, event_id])
 
             if not events:
                 logger.warning("No events could be parsed for %s. Skipping.", bids_path)
                 continue
 
-            metadata_df = events_df[['trial_type', 'stim_file']].copy()
-            metadata_df['stim_file'] = metadata_df['stim_file'].fillna('n/a')
-            metadata_df['session_id'] = getattr(row, 'session_id')
-            metadata_df['user_id'] = getattr(row, 'user_id')
-            metadata_df['session_type'] = getattr(row, 'session_type', default_task)
+            metadata_df = events_df[["trial_type", "stim_file"]].copy()
+            metadata_df["stim_file"] = metadata_df["stim_file"].fillna("n/a")
+            metadata_df["session_id"] = row.session_id
+            metadata_df["user_id"] = row.user_id
+            metadata_df["session_type"] = getattr(row, "session_type", default_task)
 
             epochs = mne.Epochs(
                 raw,

@@ -1,4 +1,3 @@
-import argparse
 import re
 import sys
 from pathlib import Path
@@ -70,7 +69,8 @@ def analyze_bids_data(bids_root_path: Path):
         # --- ★★★ 修正はここまで ★★★ ---
 
         print(
-            f"🧠 Found subject '{subject_id}', session '{session_id}', and task '{task_name}'. Loading raw data..."
+            f"🧠 Found subject '{subject_id}', session '{session_id}', "
+            f"and task '{task_name}'. Loading raw data..."
         )
 
         raw = read_raw_bids(bids_path=bids_path, verbose=False)
@@ -117,10 +117,13 @@ def analyze_bids_data(bids_root_path: Path):
     except Exception as e:
         print(f"\n❌ An error occurred during analysis: {e}")
         print(
-            "   Please ensure the BIDS data was generated correctly and all required libraries are installed."
+            "   Please ensure the BIDS data was generated correctly and all required"
+            " libraries are installed."
         )
 
 
 if __name__ == "__main__":
-    bids_root_path = Path('integration_test/test-output/bids_task_0c98a311-f98d-4f84-b731-6d2610e04502/bids_dataset')
+    bids_root_path = Path(
+        "integration_test/test-output/bids_task_0c98a311-f98d-4f84-b731-6d2610e04502/bids_dataset"
+    )
     analyze_bids_data(bids_root_path)

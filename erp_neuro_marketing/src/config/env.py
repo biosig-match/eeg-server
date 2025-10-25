@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 
 
 def _get_env(name: str, default: str | None = None, *, required: bool = False) -> str:
@@ -16,5 +16,6 @@ class Settings:
     auth_manager_url: str = _get_env("AUTH_MANAGER_URL", "http://auth_manager:3000")
     shared_volume_path: str = _get_env("SHARED_VOLUME_PATH", "/export_data")
     gemini_api_key: str = _get_env("GEMINI_API_KEY", "")
+
 
 settings = Settings()

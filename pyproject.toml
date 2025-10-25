@@ -95,8 +95,10 @@ include = [
   "erp_neuro_marketing/src",
   "tools/analysis",
 ]
+stubPath = "typings"
 exclude = ["**/.venv/**", "bids_output/**", "**/__pycache__/**"]
 
 # Reduce noise from third-party libraries without type stubs
 reportMissingTypeStubs = "none"
 reportMissingImports = "warning"
+reportMissingModuleSource = "none"

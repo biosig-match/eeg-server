@@ -7,13 +7,14 @@ import socket
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 import mne
 import numpy as np
 import pika
-from pika import exceptions as pika_exceptions
 import zstandard
+from pika import exceptions as pika_exceptions
 
 from ..config.env import settings
 from .applications.base import RealtimeApplication
@@ -27,15 +28,15 @@ class RealtimeApplicationHost:
     """Hosts realtime analysis applications behind a shared collector feed."""
 
     def __init__(self) -> None:
-        self._applications: List[RealtimeApplication] = []
-        self._user_states: Dict[str, UserState] = {}
-        self._analysis_results: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        self._applications: list[RealtimeApplication] = []
+        self._user_states: dict[str, UserState] = {}
+        self._analysis_results: dict[str, dict[str, Any]] = defaultdict(dict)
         self._analysis_lock = threading.Lock()
         self._buffer_lock = threading.Lock()
         self._threads_started = False
         self._rabbitmq_connected = threading.Event()
         self._thread_guard = threading.Lock()
-        self._threads: Dict[str, threading.Thread] = {}
+        self._threads: dict[str, threading.Thread] = {}
 
     def register_application(self, application: RealtimeApplication) -> None:
         self._applications.append(application)
@@ -49,9 +50,7 @@ class RealtimeApplicationHost:
                 ]
                 if not dead_threads:
                     return
-                print(
-                    f"⚠️ 背景スレッドが停止していたため再起動します: {', '.join(dead_threads)}"
-                )
+                print(f"⚠️ 背景スレッドが停止していたため再起動します: {', '.join(dead_threads)}")
                 # 古いスレッドオブジェクトの参照を明示的に削除
                 for name in dead_threads:
                     del self._threads[name]
@@ -73,17 +72,14 @@ class RealtimeApplicationHost:
         thread.start()
         self._threads[name] = thread
 
-    def get_user_results(self, user_id: str) -> Optional[Dict[str, Any]]:
+    def get_user_results(self, user_id: str) -> dict[str, Any] | None:
         with self._analysis_lock:
             user_results = self._analysis_results.get(user_id)
             if not user_results:
                 return None
-            return {
-                app_id: copy.deepcopy(result)
-                for app_id, result in user_results.items()
-            }
+            return {app_id: copy.deepcopy(result) for app_id, result in user_results.items()}
 
-    def get_applications_summary(self) -> List[Dict[str, str]]:
+    def get_applications_summary(self) -> list[dict[str, str]]:
         return [
             {
                 "id": app.app_id,
@@ -136,7 +132,8 @@ class RealtimeApplicationHost:
                             self._analysis_results[user_id][application.app_id] = result
                     except Exception as exc:
                         print(
-                            f"ユーザー({user_id})のアプリケーション({application.app_id})解析中にエラーが発生しました: {exc}"
+                            f"ユーザー({user_id})のアプリケーション({application.app_id})解析中にエラーが"
+                            f"発生しました: {exc}"
                         )
 
             for application in self._applications:
@@ -153,7 +150,11 @@ class RealtimeApplicationHost:
                 connection = pika.BlockingConnection(pika.URLParameters(settings.rabbitmq_url))
                 channel = connection.channel()
                 self._rabbitmq_connected.set()
-                channel.exchange_declare(exchange="raw_data_exchange", exchange_type="fanout", durable=True)
+                channel.exchange_declare(
+                    exchange="raw_data_exchange",
+                    exchange_type="fanout",
+                    durable=True,
+                )
                 result = channel.queue_declare(queue="", exclusive=True)
                 queue_name = result.method.queue
                 channel.queue_bind(exchange="raw_data_exchange", queue=queue_name)
@@ -175,14 +176,15 @@ class RealtimeApplicationHost:
 
                         if lsb_to_volts_value is None:
                             print(
-                                f"[Realtime] lsb_to_volts ヘッダーを解釈できないため、ユーザー({user_id})の"
-                                f"メッセージを除外します。headers={headers}"
+                                "[Realtime] lsb_to_volts ヘッダーを解釈できないため、"
+                                f"ユーザー({user_id})のメッセージを除外します。"
+                                f"headers={headers}"
                             )
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
                         if lsb_to_volts_value == 0.0:
                             print(
-                                f"[Realtime] lsb_to_volts=0 のため、ユーザー({user_id})の"
+                                "[Realtime] lsb_to_volts=0 のため、ユーザー({user_id})の"
                                 f"メッセージを除外します。headers={headers}"
                             )
                             ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -215,7 +217,9 @@ class RealtimeApplicationHost:
                         self._handle_callback_exception(exc, ch, method.delivery_tag)
 
                 channel.basic_consume(queue=queue_name, on_message_callback=callback)
-                print("🚀 リアルタイムアプリケーションホストが起動し、圧縮生データの受信待機中です。")
+                print(
+                    "🚀 リアルタイムアプリケーションホストが起動し、圧縮生データの受信待機中です。"
+                )
                 channel.start_consuming()
             except pika_exceptions.AMQPConnectionError as exc:
                 should_retry = True
@@ -245,12 +249,15 @@ class RealtimeApplicationHost:
         user_id: str,
         sampling_rate: float,
         lsb_to_volts: float,
-        header_info: Dict[str, List[str]],
+        header_info: dict[str, list[str]],
         signals: np.ndarray,
         impedances: np.ndarray,
     ) -> None:
         if lsb_to_volts == 0.0:
-            print(f"[Realtime] lsb_to_voltsが0のためユーザー({user_id})のバッファ更新をスキップします。")
+            print(
+                f"[Realtime] lsb_to_voltsが0のためユーザー({user_id})のバッファ"
+                "更新をスキップします。"
+            )
             return
 
         with self._buffer_lock:
@@ -266,7 +273,10 @@ class RealtimeApplicationHost:
 
             if needs_reset:
                 if state is not None:
-                    print(f"ユーザー({user_id})のチャネル構成が変化したため、プロファイルを再初期化します。")
+                    print(
+                        f"ユーザー({user_id})のチャネル構成が変化したため、"
+                        "プロファイルを再初期化します。"
+                    )
 
                 mne_info = mne.create_info(
                     ch_names=header_info["ch_names"],
@@ -287,8 +297,18 @@ class RealtimeApplicationHost:
                 }
                 if lsb_to_volts == 0:
                     print(f"[Realtime] Warning: lsb_to_volts is zero for user {user_id}")
-                tracker = ChannelQualityTracker(header_info["ch_names"], header_info["ch_types"])
-                state = UserState(profile=profile, buffer=np.empty((0, len(header_info["ch_names"])), dtype=np.int16), tracker=tracker)
+                tracker = ChannelQualityTracker(
+                    header_info["ch_names"],
+                    header_info["ch_types"],
+                )
+                state = UserState(
+                    profile=profile,
+                    buffer=np.empty(
+                        (0, len(header_info["ch_names"])),
+                        dtype=np.int16,
+                    ),
+                    tracker=tracker,
+                )
                 self._user_states[user_id] = state
                 with self._analysis_lock:
                     self._analysis_results.pop(user_id, None)
@@ -330,7 +350,7 @@ class RealtimeApplicationHost:
         return cloned
 
     @staticmethod
-    def _coerce_float(*candidates: Any) -> Optional[float]:
+    def _coerce_float(*candidates: Any) -> float | None:
         """
         複数の候補から有効な浮動小数点数を抽出する。
 
@@ -346,7 +366,7 @@ class RealtimeApplicationHost:
         Returns:
             最初の非ゼロ float 値、すべてゼロなら 0.0、すべて無効なら None
         """
-        zero_value: Optional[float] = None
+        zero_value: float | None = None
         for candidate in candidates:
             if candidate is None:
                 continue

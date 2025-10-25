@@ -9,9 +9,9 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-from matplotlib import cm
 import mne
 import numpy as np
+from matplotlib import cm
 from mne_connectivity import spectral_connectivity_epochs
 from mne_connectivity.viz import plot_connectivity_circle
 from numpy.random import default_rng
@@ -82,7 +82,8 @@ class PsdCoherenceApplication(RealtimeApplication):
         if low_variance:
             low_variance_channels = [ch for _, ch in low_variance]
             print(
-                f"[Realtime] Low-variance channels detected for user {user_id}: {low_variance_channels}. Marking as bad."
+                "[Realtime] Low-variance channels detected for user "
+                f"{user_id}: {low_variance_channels}. Marking as bad."
             )
             bad_channels.update(low_variance_channels)
             analysis_indices = [
@@ -185,7 +186,8 @@ class PsdCoherenceApplication(RealtimeApplication):
 
         if settings.enable_debug_logging:
             print(
-                f"[{datetime.now():%Y-%m-%d %H:%M:%S}] ユーザー({user_id})の解析結果を更新しました。"
+                f"[{datetime.now():%Y-%m-%d %H:%M:%S}] ユーザー({user_id})の解析結果を"
+                "更新しました。"
             )
 
         return result

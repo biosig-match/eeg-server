@@ -1,4 +1,4 @@
-import amqp, { Channel } from 'amqplib'
+import amqp, { Channel, ChannelModel } from 'amqplib'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
@@ -6,7 +6,7 @@ import { zValidator } from '@hono/zod-validator'
 
 import { config } from '../config/env'
 
-let amqpConnection: amqp.Connection | null = null
+let amqpConnection: ChannelModel | null = null
 let amqpChannel: Channel | null = null
 let lastConnectedAt: Date | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null

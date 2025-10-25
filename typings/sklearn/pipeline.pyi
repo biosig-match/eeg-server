@@ -1,0 +1,3 @@
+from typing import Any
+
+def make_pipeline(*steps: Any, **kwargs: Any) -> Any: ...

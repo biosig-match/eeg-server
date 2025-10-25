@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from flask import Flask, jsonify
 
@@ -37,7 +37,7 @@ def health_check_v1():
     extended_payload = {
         **payload,
         "service": "realtime-analyzer",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     return jsonify(extended_payload), status_code
 
