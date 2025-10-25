@@ -1,0 +1,15 @@
+services:
+  db:
+    ports: []
+  rabbitmq:
+    ports: []
+  object-storage:
+    ports: []
+  erp_neuro_marketing:
+    ports: []
+  ingress:
+    ports:
+      - '127.0.0.1:${NGINX_PORT:-80}:80'
+    # Cloudflare Tunnelからの接続用にlocalhostのみでポートを公開します。
+    # 127.0.0.1にバインドすることで外部からの直接アクセスを防ぎます。
+    # 詳細はIssue#44を参照してください。
