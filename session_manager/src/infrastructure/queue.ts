@@ -1,8 +1,11 @@
-import amqp, { Channel, Connection } from 'amqplib';
+import amqp from 'amqplib';
 import { config } from '../config/env';
 
-let amqpConnection: Connection | null = null;
-let amqpChannel: Channel | null = null;
+type AmqpConnection = Awaited<ReturnType<typeof amqp.connect>>;
+type AmqpChannel = Awaited<ReturnType<AmqpConnection['createChannel']>>;
+
+let amqpConnection: AmqpConnection | null = null;
+let amqpChannel: AmqpChannel | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let lastConnectedAt: Date | null = null;
 
@@ -74,11 +77,12 @@ export async function initializeQueue(): Promise<void> {
   await connectRabbitMQ();
 }
 
-export function getAmqpChannel(): amqp.Channel {
-  if (!amqpChannel) {
+export function getAmqpChannel(): AmqpChannel {
+  const channel = amqpChannel;
+  if (!channel) {
     throw new Error('AMQP channel is not available. It might be disconnected or not initialized.');
   }
-  return amqpChannel;
+  return channel;
 }
 
 export function isQueueReady(): boolean {
@@ -94,16 +98,18 @@ export async function shutdownQueue(): Promise<void> {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  const channel = amqpChannel;
   try {
-    await amqpChannel?.close();
+    await channel?.close();
   } catch (error) {
     console.error('[RabbitMQ] Error closing channel during shutdown.', error);
   } finally {
     amqpChannel = null;
   }
 
+  const connection = amqpConnection;
   try {
-    await amqpConnection?.close();
+    await connection?.close();
   } catch (error) {
     console.error('[RabbitMQ] Error closing connection during shutdown.', error);
   } finally {

@@ -1,11 +1,15 @@
-import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
+import amqp from 'amqplib'
+import type { ConsumeMessage } from 'amqplib'
 import { config } from '../config/env'
 import { handleMessage } from '../domain/services/processor'
 import { stimulusAssetJobPayloadSchema } from '../app/schemas/job'
 import type { StimulusAssetJobPayload } from '../app/schemas/job'
 
-let amqpConnection: Connection | null = null;
-let amqpChannel: Channel | null = null;
+type AmqpConnection = Awaited<ReturnType<typeof amqp.connect>>
+type AmqpChannel = Awaited<ReturnType<AmqpConnection['createChannel']>>
+
+let amqpConnection: AmqpConnection | null = null;
+let amqpChannel: AmqpChannel | null = null;
 let consumerTag: string | null = null;
 let isConsuming = false;
 let lastConnectedAt: Date | null = null;
@@ -75,7 +79,7 @@ async function connectRabbitMQ(): Promise<void> {
   }
 }
 
-function onMessage(msg: ConsumeMessage | null, channel: Channel) {
+function onMessage(msg: ConsumeMessage | null, channel: AmqpChannel) {
   if (!msg) {
     return;
   }
@@ -94,15 +98,16 @@ export async function startConsumer(): Promise<void> {
   if (!amqpChannel) {
     await connectRabbitMQ();
   }
-  if (!amqpChannel) {
+  const channel = amqpChannel;
+  if (!channel) {
     throw new Error('RabbitMQ channel is not available');
   }
   if (isConsuming) {
     return;
   }
-  const consumer = await amqpChannel.consume(
+  const consumer = await channel.consume(
     config.STIMULUS_ASSET_QUEUE,
-    (msg) => onMessage(msg, amqpChannel!),
+    (msg) => onMessage(msg, channel),
   );
   consumerTag = consumer.consumerTag;
   isConsuming = true;
@@ -120,11 +125,12 @@ export function lastRabbitConnection(): Date | null {
 }
 
 export function publishStimulusAssetJob(job: StimulusAssetJobPayload): void {
-  if (!amqpChannel) {
+  const channel = amqpChannel;
+  if (!channel) {
     throw new Error('RabbitMQ channel is not initialized.');
   }
   const payload = stimulusAssetJobPayloadSchema.parse(job);
-  amqpChannel.sendToQueue(
+  channel.sendToQueue(
     config.STIMULUS_ASSET_QUEUE,
     Buffer.from(JSON.stringify(payload)),
     { persistent: true },
@@ -136,9 +142,10 @@ export async function shutdownQueue(): Promise<void> {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  const channel = amqpChannel;
   try {
-    if (amqpChannel && consumerTag) {
-      await amqpChannel.cancel(consumerTag);
+    if (channel && consumerTag) {
+      await channel.cancel(consumerTag);
     }
   } catch (error) {
     console.error('[RabbitMQ] Error cancelling consumer during shutdown.', error);
@@ -148,15 +155,16 @@ export async function shutdownQueue(): Promise<void> {
   }
 
   try {
-    await amqpChannel?.close();
+    await channel?.close();
   } catch (error) {
     console.error('[RabbitMQ] Error closing channel during shutdown.', error);
   } finally {
     amqpChannel = null;
   }
 
+  const connection = amqpConnection;
   try {
-    await amqpConnection?.close();
+    await connection?.close();
   } catch (error) {
     console.error('[RabbitMQ] Error closing connection during shutdown.', error);
   } finally {

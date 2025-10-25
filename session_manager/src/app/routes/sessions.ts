@@ -14,6 +14,7 @@ import { config } from '../../config/env';
 import { requireUser } from '../middleware/auth';
 import type { ParsedBody, ParsedBodyRecord } from '../types/context';
 import type { ParticipantRole } from '../schemas/auth';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 export const sessionsRouter = new Hono();
 
@@ -114,11 +115,11 @@ sessionsRouter.post(
     const requesterId = c.req.header('X-User-Id');
 
     if (!requesterId) {
-      return c.json({ error: 'Unauthorized' }, 401);
+      return c.json({ error: 'Unauthorized' }, 401 as const);
     }
 
     if (metadata.user_id !== requesterId) {
-      return c.json({ error: 'user_id does not match authenticated user.' }, 403);
+      return c.json({ error: 'user_id does not match authenticated user.' }, 403 as const);
     }
 
     if (metadata.experiment_id) {
@@ -126,7 +127,7 @@ sessionsRouter.post(
         await ensureExperimentRole(requesterId, metadata.experiment_id, 'participant');
       } catch (error) {
         const err = error as HttpError;
-        const status = err.status ?? 500;
+        const status = (err.status ?? 500) as ContentfulStatusCode;
         return c.json({ error: err.message }, status);
       }
     }
@@ -152,17 +153,17 @@ sessionsRouter.post(
         if (existingOwner && existingOwner !== requesterId) {
           return c.json(
             { error: 'Session ID already exists and belongs to another user.' },
-            409,
+            409 as const,
           );
         }
 
-        return c.json({ message: 'Session already exists.' }, 200);
+        return c.json({ message: 'Session already exists.' }, 200 as const);
       }
 
-      return c.json({ message: 'Session started successfully.' }, 201);
+      return c.json({ message: 'Session started successfully.' }, 201 as const);
     } catch (error) {
       console.error('Failed to start session:', error);
-      return c.json({ error: 'Database error while starting session.' }, 500);
+      return c.json({ error: 'Database error while starting session.' }, 500 as const);
     }
   },
 );
@@ -177,12 +178,12 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
   const metadataString = toStringValue(metadataRaw);
 
   if (!metadataString) {
-    return c.json({ error: 'metadata field is required.' }, 400);
+    return c.json({ error: 'metadata field is required.' }, 400 as const);
   }
 
   const requesterId = c.req.header('X-User-Id');
   if (!requesterId) {
-    return c.json({ error: 'Unauthorized' }, 401);
+    return c.json({ error: 'Unauthorized' }, 401 as const);
   }
 
   const eventsLogCsvFile = toFileValue(eventsRaw);
@@ -192,7 +193,7 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
     const metadata = sessionEndMetadataSchema.parse(JSON.parse(metadataString));
 
     if (metadata.user_id !== requesterId) {
-      return c.json({ error: 'user_id does not match authenticated user.' }, 403);
+      return c.json({ error: 'user_id does not match authenticated user.' }, 403 as const);
     }
 
     const existingSession = await dbClient.query(
@@ -201,12 +202,12 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
     );
 
     if (existingSession.rowCount === 0) {
-      return c.json({ error: `Session ${metadata.session_id} not found.` }, 404);
+      return c.json({ error: `Session ${metadata.session_id} not found.` }, 404 as const);
     }
 
     const sessionRow = existingSession.rows[0];
     if (sessionRow.user_id && sessionRow.user_id !== requesterId) {
-      return c.json({ error: 'You are not allowed to modify this session.' }, 403);
+      return c.json({ error: 'You are not allowed to modify this session.' }, 403 as const);
     }
 
     const experimentIdForAuth: string | undefined =
@@ -217,7 +218,7 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
         await ensureExperimentRole(requesterId, experimentIdForAuth, 'participant');
       } catch (error) {
         const err = error as HttpError;
-        const status = err.status ?? 500;
+        const status = (err.status ?? 500) as ContentfulStatusCode;
         return c.json({ error: err.message }, status);
       }
     }
@@ -336,7 +337,7 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
           error:
             'Session data saved, but failed to queue background processing. Please notify administrator.',
         },
-        500,
+        500 as const,
       );
     }
     return c.json({ message: 'Session ended and processed successfully' });
@@ -350,9 +351,9 @@ sessionsRouter.post('/end', requireUser(), async (c) => {
     }
     console.error('Failed to end session:', error);
     if (error instanceof z.ZodError) {
-      return c.json({ error: 'Invalid data format.', details: error.issues }, 400);
+      return c.json({ error: 'Invalid data format.', details: error.issues }, 400 as const);
     }
-    return c.json({ error: 'Failed to end session' }, 500);
+    return c.json({ error: 'Failed to end session' }, 500 as const);
   } finally {
     if (!releaseDestroyedClient) {
       dbClient.release();
