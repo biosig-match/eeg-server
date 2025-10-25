@@ -65,6 +65,7 @@ const baseUrlFromEnv =
   process.env.TEST_BASE_URL ??
   (basePort ? `http://${baseHost}:${basePort}/api/v1` : `http://${baseHost}:8080/api/v1`)
 const BASE_URL = baseUrlFromEnv ?? 'http://localhost:8080/api/v1'
+const API_ROOT = BASE_URL.replace(/\/api\/v1$/, '')
 
 const resolvedDbConfig = {
   user: process.env.TEST_POSTGRES_USER ?? process.env.POSTGRES_USER ?? 'admin',
@@ -113,6 +114,92 @@ const DATABASE_URL_CANDIDATES =
 let resolvedDatabaseUrl = DEFAULT_DATABASE_URL
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+const defaultDependencyTimeoutMs =
+  Number.parseInt(process.env.TEST_DEPENDENCY_READY_TIMEOUT_MS ?? '', 10) || 120_000
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeoutMs?: number } = {},
+): Promise<Response> {
+  const { timeoutMs = 5_000, ...init } = options
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function waitForHttpOk(
+  url: string,
+  {
+    timeoutMs = defaultDependencyTimeoutMs,
+    intervalMs = 2_000,
+    expectedStatus = 200,
+    description = url,
+  }: {
+    timeoutMs?: number
+    intervalMs?: number
+    expectedStatus?: number
+    description?: string
+  } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let attempt = 0
+  while (Date.now() < deadline) {
+    attempt += 1
+    try {
+      const response = await fetchWithTimeout(url, { timeoutMs: Math.min(5_000, intervalMs) })
+      if (response.status === expectedStatus) {
+        if (attempt > 1) {
+          console.log(`✅ ${description} became ready after ${attempt} attempts.`)
+        }
+        return
+      }
+      console.warn(
+        `ℹ️  ${description} responded with status ${response.status}. Retrying in ${intervalMs} ms...`,
+      )
+    } catch (error) {
+      console.warn(
+        `ℹ️  ${description} is not reachable yet (${(error as Error).message}). Retrying in ${intervalMs} ms...`,
+      )
+    }
+    await sleep(intervalMs)
+  }
+  throw new Error(`Timed out waiting for ${description} to become ready within ${timeoutMs} ms.`)
+}
+
+async function waitForObjectStorageReady(
+  client: ReturnType<typeof createObjectStorageTestClient>,
+  {
+    timeoutMs = defaultDependencyTimeoutMs,
+    intervalMs = 2_000,
+    description = `object storage (${OBJECT_STORAGE_CONFIG.endPoint}:${OBJECT_STORAGE_CONFIG.port})`,
+  }: {
+    timeoutMs?: number
+    intervalMs?: number
+    description?: string
+  } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let attempt = 0
+  while (Date.now() < deadline) {
+    attempt += 1
+    try {
+      await client.ping()
+      console.log(`✅ ${description} is reachable (attempt ${attempt}).`)
+      return
+    } catch (error) {
+      console.warn(
+        `ℹ️  ${description} not ready yet (${(error as Error).message}). Retrying in ${intervalMs} ms...`,
+      )
+    }
+    await sleep(intervalMs)
+  }
+  throw new Error(`Timed out waiting for ${description} to become reachable within ${timeoutMs} ms.`)
+}
 
 async function resolveDatabaseUrlWithFallbacks(
   candidates: readonly string[],
@@ -254,17 +341,34 @@ function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
     secretKey: config.secretKey,
   })
 
+  const ensureBucket = async (bucketName: string) => {
+    const exists = await client.bucketExists(bucketName).catch(() => false)
+    if (!exists) {
+      await client.makeBucket(bucketName)
+    }
+  }
+
   return {
+    async ping(): Promise<void> {
+      await client.listBuckets()
+    },
+    async bucketExists(bucketName: string): Promise<boolean> {
+      try {
+        return await client.bucketExists(bucketName)
+      } catch {
+        return false
+      }
+    },
+    async ensureBucket(bucketName: string): Promise<void> {
+      await ensureBucket(bucketName)
+    },
     async fPutObject(
       bucketName: string,
       objectId: string,
       filePath: string,
       metadata: Record<string, string> = {},
     ): Promise<void> {
-      const exists = await client.bucketExists(bucketName).catch(() => false)
-      if (!exists) {
-        await client.makeBucket(bucketName)
-      }
+      await ensureBucket(bucketName)
       await client.fPutObject(bucketName, objectId, filePath, metadata)
     },
   }
@@ -1109,6 +1213,13 @@ beforeAll(async () => {
   }
   dbPool = new Pool({ connectionString: resolvedDatabaseUrl })
   objectStorageClient = createObjectStorageTestClient(OBJECT_STORAGE_CONFIG)
+  await waitForObjectStorageReady(objectStorageClient)
+  await waitForHttpOk(`${API_ROOT}/health`, {
+    description: 'API gateway /health endpoint',
+  })
+  await waitForHttpOk(`${API_ROOT}/api/v1/health`, {
+    description: 'API gateway /api/v1/health endpoint',
+  })
   await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
 })
 
