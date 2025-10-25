@@ -1,4 +1,5 @@
-import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
+import amqp from 'amqplib'
+import type { ConsumeMessage } from 'amqplib'
 import { Client as S3CompatibleClient } from 'minio'
 import { Pool } from 'pg'
 import { init as zstdInit, decompress as zstdDecompressRaw } from '@bokuweb/zstd-wasm'
@@ -17,9 +18,11 @@ import {
 
 const zstdDecompress: (buf: Uint8Array) => Uint8Array = zstdDecompressRaw as any
 
+type AmqpConnection = Awaited<ReturnType<typeof amqp.connect>>
+type AmqpChannel = Awaited<ReturnType<AmqpConnection['createChannel']>>
 
-let amqpConnection: Connection | null = null
-let amqpChannel: Channel | null = null
+let amqpConnection: AmqpConnection | null = null
+let amqpChannel: AmqpChannel | null = null
 let consumerTag: string | null = null
 let isConsuming = false
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -184,26 +187,28 @@ async function ensureZstdReady() {
 
 async function connectRabbitMQ() {
   let attempt = 0
-  while (!amqpChannel) {
-    attempt += 1
-    try {
-      console.log(`📡 [RabbitMQ] Connecting (attempt ${attempt})...`)
-      amqpConnection = await amqp.connect(config.RABBITMQ_URL)
-      amqpConnection.on('close', () => {
-        console.error('❌ [RabbitMQ] Connection closed. Reconnecting...')
-        amqpConnection = null
-        amqpChannel = null
-        isConsuming = false
-        consumerTag = null
-        scheduleReconnect()
-      })
-      amqpConnection.on('error', (error) => {
-        console.error('❌ [RabbitMQ] Connection error:', error)
-      })
-      amqpChannel = await amqpConnection.createChannel()
-      await amqpChannel.assertExchange(config.RAW_DATA_EXCHANGE, 'fanout', { durable: true })
-      await amqpChannel.assertQueue(config.PROCESSING_QUEUE, { durable: true })
-      await amqpChannel.bindQueue(config.PROCESSING_QUEUE, config.RAW_DATA_EXCHANGE, '')
+	  while (!amqpChannel) {
+	    attempt += 1
+	    try {
+	      console.log(`📡 [RabbitMQ] Connecting (attempt ${attempt})...`)
+	      const connection = await amqp.connect(config.RABBITMQ_URL)
+	      connection.on('close', () => {
+	        console.error('❌ [RabbitMQ] Connection closed. Reconnecting...')
+	        amqpConnection = null
+	        amqpChannel = null
+	        isConsuming = false
+	        consumerTag = null
+	        scheduleReconnect()
+	      })
+	      connection.on('error', (error) => {
+	        console.error('❌ [RabbitMQ] Connection error:', error)
+	      })
+	      const channel = await connection.createChannel()
+	      await channel.assertExchange(config.RAW_DATA_EXCHANGE, 'fanout', { durable: true })
+	      await channel.assertQueue(config.PROCESSING_QUEUE, { durable: true })
+	      await channel.bindQueue(config.PROCESSING_QUEUE, config.RAW_DATA_EXCHANGE, '')
+	      amqpConnection = connection
+	      amqpChannel = channel
       lastRabbitConnectedAt = new Date()
       if (reconnectTimer) {
         clearTimeout(reconnectTimer)
@@ -221,14 +226,15 @@ async function connectRabbitMQ() {
 }
 
 async function startConsumer() {
-  if (!amqpChannel) {
-    throw new Error('RabbitMQ channel is not available')
-  }
-  if (isConsuming) {
-    return
-  }
-  amqpChannel.prefetch(1)
-  const consumer = await amqpChannel.consume(config.PROCESSING_QUEUE, processMessage)
+	  const channel = amqpChannel
+	  if (!channel) {
+	    throw new Error('RabbitMQ channel is not available')
+	  }
+	  if (isConsuming) {
+	    return
+	  }
+	  channel.prefetch(1)
+	  const consumer = await channel.consume(config.PROCESSING_QUEUE, processMessage)
   consumerTag = consumer.consumerTag
   isConsuming = true
   console.log(`🚀 Processor service waiting for messages in queue: "${config.PROCESSING_QUEUE}"`)
@@ -341,9 +347,14 @@ function isTransientError(error: any): boolean {
 
 async function processMessage(msg: ConsumeMessage | null) {
   if (!msg) return
+  const channel = amqpChannel
+  if (!channel) {
+    console.error('❌ [Processor] Channel missing while processing message. Discarding.')
+    return
+  }
 
-  const ack = () => amqpChannel?.ack(msg)
-  const nack = (requeue = false) => amqpChannel?.nack(msg, false, requeue)
+  const ack = () => channel.ack(msg)
+  const nack = (requeue = false) => channel.nack(msg, false, requeue)
 
   try {
     const { headers } = msg.properties
