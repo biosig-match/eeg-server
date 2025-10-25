@@ -17,3 +17,9 @@ cd integration_test
 ```
 bun test
 ```
+
+> ヒント: テストをホスト環境から実行する場合は、事前に `docker compose up` で
+> PostgreSQL や RabbitMQ などの依存サービスを起動してください。
+> もし Docker ネットワーク内ホスト名（例: `db`, `rabbitmq`）を利用したい場合は、
+> `TEST_USE_DOCKER_HOSTNAMES=true bun test` のように実行すると、従来どおりのホスト名を
+> 使用できます。

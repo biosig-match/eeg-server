@@ -9,21 +9,154 @@ import { Buffer } from 'buffer'
 import neatCSV from 'neat-csv'
 import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_corrector/src/domain/services/trigger_timestamps'
 
+const preferDockerHostnames =
+  (process.env.TEST_USE_DOCKER_HOSTNAMES ?? '').toLowerCase() === 'true'
+
+function resolveHost({
+  testValue,
+  serviceValue,
+  defaultValue,
+  dockerOnlyHostnames,
+}: {
+  testValue?: string
+  serviceValue?: string
+  defaultValue: string
+  dockerOnlyHostnames: string[]
+}) {
+  if (testValue && testValue.trim().length > 0) {
+    return testValue
+  }
+
+  const resolvedService = serviceValue?.trim()
+  if (!resolvedService) {
+    return defaultValue
+  }
+
+  if (preferDockerHostnames) {
+    return resolvedService
+  }
+
+  const normalized = resolvedService.toLowerCase()
+  if (dockerOnlyHostnames.includes(normalized)) {
+    return defaultValue
+  }
+
+  return resolvedService
+}
+
+const baseHost = resolveHost({
+  testValue: process.env.TEST_BASE_HOST,
+  serviceValue: process.env.NGINX_HOST,
+  defaultValue: 'localhost',
+  dockerOnlyHostnames: ['nginx'],
+})
+const basePort =
+  process.env.TEST_BASE_PORT ?? process.env.NGINX_PORT ?? process.env.PORT ?? process.env.API_PORT
 const baseUrlFromEnv =
   process.env.TEST_BASE_URL ??
-  (process.env.NGINX_PORT ? `http://localhost:${process.env.NGINX_PORT}/api/v1` : undefined)
+  (basePort ? `http://${baseHost}:${basePort}/api/v1` : `http://${baseHost}:8080/api/v1`)
 const BASE_URL = baseUrlFromEnv ?? 'http://localhost:8080/api/v1'
 
-const databaseUrlFromEnv =
-  process.env.TEST_DATABASE_URL ??
-  (process.env.POSTGRES_USER &&
-  process.env.POSTGRES_PASSWORD &&
-  process.env.POSTGRES_HOST &&
-  process.env.POSTGRES_PORT &&
-  process.env.POSTGRES_DB
-    ? `postgres://${process.env.POSTGRES_USER}:${process.env.POSTGRES_PASSWORD}@${process.env.POSTGRES_HOST}:${process.env.POSTGRES_PORT}/${process.env.POSTGRES_DB}`
-    : undefined)
-const DATABASE_URL = databaseUrlFromEnv ?? 'postgres://admin:password@localhost:5432/eeg_data'
+const resolvedDbConfig = {
+  user: process.env.TEST_POSTGRES_USER ?? process.env.POSTGRES_USER ?? 'admin',
+  password: process.env.TEST_POSTGRES_PASSWORD ?? process.env.POSTGRES_PASSWORD ?? 'password',
+  host: resolveHost({
+    testValue: process.env.TEST_POSTGRES_HOST,
+    serviceValue: process.env.POSTGRES_HOST,
+    defaultValue: 'localhost',
+    dockerOnlyHostnames: ['db', 'postgres', 'postgresql', 'timescaledb'],
+  }),
+  port: process.env.TEST_POSTGRES_PORT ?? process.env.POSTGRES_PORT ?? '5432',
+  database: process.env.TEST_POSTGRES_DB ?? process.env.POSTGRES_DB ?? 'eeg_data',
+}
+const databaseHostCandidates = Array.from(
+  new Set(
+    [
+      resolvedDbConfig.host,
+      process.env.TEST_POSTGRES_HOST,
+      process.env.POSTGRES_HOST,
+    ]
+      .flatMap((value) => {
+        const trimmed = value?.trim()
+        return trimmed ? [trimmed] : []
+      })
+      .filter((value) => value.length > 0),
+  ),
+)
+const databaseUrlCandidates = Array.from(
+  new Set(
+    [
+      process.env.TEST_DATABASE_URL,
+      process.env.DATABASE_URL,
+      ...databaseHostCandidates.map(
+        (host) =>
+          `postgres://${resolvedDbConfig.user}:${resolvedDbConfig.password}@${host}:${resolvedDbConfig.port}/${resolvedDbConfig.database}`,
+      ),
+    ].filter((value): value is string => Boolean(value && value.length > 0)),
+  ),
+)
+const DEFAULT_DATABASE_URL =
+  databaseUrlCandidates[databaseUrlCandidates.length - 1] ??
+  'postgres://admin:password@localhost:5432/eeg_data'
+const DATABASE_URL_CANDIDATES =
+  databaseUrlCandidates.length > 0 ? databaseUrlCandidates : [DEFAULT_DATABASE_URL]
+let resolvedDatabaseUrl = DEFAULT_DATABASE_URL
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+async function resolveDatabaseUrlWithFallbacks(
+  candidates: readonly string[],
+  options: { timeoutMs?: number; retryIntervalMs?: number; maxAttemptsPerCandidate?: number } = {},
+): Promise<string> {
+  if (!candidates.length) {
+    throw new Error('No database connection string candidates provided.')
+  }
+
+  const {
+    timeoutMs = 30_000,
+    retryIntervalMs = 1_000,
+    maxAttemptsPerCandidate = 3,
+  } = options
+  const startTime = Date.now()
+  let lastError: unknown = null
+
+  for (const candidate of candidates) {
+    for (let attempt = 1; attempt <= Math.max(1, maxAttemptsPerCandidate); attempt += 1) {
+      if (Date.now() - startTime > timeoutMs) {
+        break
+      }
+      const pool = new Pool({ connectionString: candidate, max: 1 })
+      try {
+        await pool.query('SELECT 1')
+        await pool.end()
+        return candidate
+      } catch (error) {
+        lastError = error
+        await pool.end().catch(() => {
+          /* swallow */
+        })
+        if (attempt < maxAttemptsPerCandidate) {
+          await sleep(retryIntervalMs)
+        }
+      }
+    }
+    if (Date.now() - startTime > timeoutMs) {
+      break
+    }
+  }
+
+  const uniqueCandidates = Array.from(new Set(candidates))
+  const errorMessage =
+    uniqueCandidates.length === 1
+      ? `Failed to connect to PostgreSQL at ${uniqueCandidates[0]} within ${timeoutMs} ms.`
+      : `Failed to connect to PostgreSQL using any of the configured endpoints within ${timeoutMs} ms. Tried: ${uniqueCandidates.join(
+          ', ',
+        )}`
+
+  const error = new Error(errorMessage)
+  ;(error as Error & { cause?: unknown }).cause = lastError ?? undefined
+  throw error
+}
 
 function parseEndpointParts(endpoint?: string) {
   if (!endpoint) {
@@ -943,7 +1076,8 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
 // --- Test Suite ---
 beforeAll(async () => {
   await initZstd()
-  dbPool = new Pool({ connectionString: DATABASE_URL })
+  resolvedDatabaseUrl = await resolveDatabaseUrlWithFallbacks(DATABASE_URL_CANDIDATES)
+  dbPool = new Pool({ connectionString: resolvedDatabaseUrl })
   objectStorageClient = createObjectStorageTestClient(OBJECT_STORAGE_CONFIG)
   await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
 })

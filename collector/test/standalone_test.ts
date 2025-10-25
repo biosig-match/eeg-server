@@ -5,16 +5,62 @@ import fs from 'fs';
 import path from 'path';
 
 // --- 設定 (Configuration) ---
-const collectorHost =
-  process.env.TEST_COLLECTOR_HOST ?? process.env.COLLECTOR_HOST ?? 'collector';
+const preferDockerHostnames =
+  (process.env.TEST_USE_DOCKER_HOSTNAMES ?? '').toLowerCase() === 'true';
+
+function resolveHost({
+  testValue,
+  serviceValue,
+  defaultValue,
+  dockerOnlyHostnames,
+}: {
+  testValue?: string;
+  serviceValue?: string;
+  defaultValue: string;
+  dockerOnlyHostnames: string[];
+}) {
+  if (testValue && testValue.trim().length > 0) {
+    return testValue;
+  }
+
+  const resolvedService = serviceValue?.trim();
+  if (!resolvedService) {
+    return defaultValue;
+  }
+
+  if (preferDockerHostnames) {
+    return resolvedService;
+  }
+
+  const normalized = resolvedService.toLowerCase();
+  if (dockerOnlyHostnames.includes(normalized)) {
+    return defaultValue;
+  }
+
+  return resolvedService;
+}
+
+const collectorHost = resolveHost({
+  testValue: process.env.TEST_COLLECTOR_HOST,
+  serviceValue: process.env.COLLECTOR_HOST,
+  defaultValue: 'localhost',
+  dockerOnlyHostnames: ['collector'],
+});
 const collectorPort = process.env.TEST_COLLECTOR_PORT ?? process.env.COLLECTOR_PORT ?? '3000';
 const COLLECTOR_BASE_URL =
-  process.env.TEST_COLLECTOR_BASE_URL ?? process.env.COLLECTOR_BASE_URL ?? `http://${collectorHost}:${collectorPort}`;
+  process.env.TEST_COLLECTOR_BASE_URL ??
+  process.env.COLLECTOR_BASE_URL ??
+  `http://${collectorHost}:${collectorPort}`;
 
 const rabbitUser = process.env.TEST_RABBITMQ_USER ?? process.env.RABBITMQ_USER ?? 'guest';
 const rabbitPassword =
   process.env.TEST_RABBITMQ_PASSWORD ?? process.env.RABBITMQ_PASSWORD ?? 'guest';
-const rabbitHost = process.env.TEST_RABBITMQ_HOST ?? process.env.RABBITMQ_HOST ?? 'rabbitmq';
+const rabbitHost = resolveHost({
+  testValue: process.env.TEST_RABBITMQ_HOST,
+  serviceValue: process.env.RABBITMQ_HOST,
+  defaultValue: 'localhost',
+  dockerOnlyHostnames: ['rabbitmq'],
+});
 const rabbitPort = process.env.TEST_RABBITMQ_PORT ?? process.env.RABBITMQ_PORT ?? '5672';
 const RABBITMQ_URL =
   process.env.TEST_RABBITMQ_URL ??
