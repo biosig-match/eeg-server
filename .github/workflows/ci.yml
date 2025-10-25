@@ -13,7 +13,7 @@ concurrency:
 
 env:
   BUN_VERSION: 1.2.22
-  COMPOSE_FILES: -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.test.yml
+  COMPOSE_FILES: -f docker-compose.yml -f docker-compose.test.yml
 
 jobs:
   lint_ts:
@@ -168,7 +168,9 @@ jobs:
       - name: Run collector standalone tests
         run: bun --env-file=.env run collector/test/standalone_test.ts
       - name: Run integration test suite
-        run: bun --cwd integration_test test --timeout 300000
+        env:
+          TEST_TIMEOUT: ${{ env.TEST_TIMEOUT || '300000' }}
+        run: bun --cwd integration_test test --timeout "${TEST_TIMEOUT}"
       - name: Collect docker logs on failure
         if: failure()
         run: |
@@ -191,7 +193,10 @@ jobs:
     permissions:
       contents: read
     needs:
-      - integration_tests
+      - lint_ts
+      - lint_py
+      - typecheck_ts
+      - typecheck_py
     strategy:
       fail-fast: false
       max-parallel: 3

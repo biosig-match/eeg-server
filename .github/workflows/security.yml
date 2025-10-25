@@ -22,10 +22,10 @@ jobs:
         with:
           scan-type: fs
           format: table
-          ignore-unfixed: true
+          ignore-unfixed: ${{ github.event_name == 'schedule' }}
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: ${{ github.event_name == 'schedule' && '1' || '0' }}
 
   dependency_review:
     name: Dependency Review

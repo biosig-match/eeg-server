@@ -25,14 +25,6 @@ COMPOSE_FILES+=(-f "${PROJECT_ROOT}/docker-compose.test.yml")
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-integration-tests}"
 
 cleanup() {
-  local exit_code=$?
-
-  if [[ ${exit_code} -ne 0 ]] && [[ "${SAVE_LOGS_ON_FAILURE:-1}" == "1" ]]; then
-    local log_path="${PROJECT_ROOT}/integration-test-logs.txt"
-    echo "💾 Saving docker logs to ${log_path}..."
-    docker compose "${COMPOSE_FILES[@]}" logs --no-color > "${log_path}" 2>&1 || true
-  fi
-
   echo "🧹 Cleaning up test environment..."
   docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 }
@@ -55,6 +47,12 @@ set +e
 docker compose "${COMPOSE_FILES[@]}" up --abort-on-container-exit integration-test
 EXIT_CODE=$?
 set -e
+
+if [[ ${EXIT_CODE} -ne 0 ]] && [[ "${SAVE_LOGS_ON_FAILURE:-1}" == "1" ]]; then
+  log_path="${PROJECT_ROOT}/integration-test-logs.txt"
+  echo "💾 Saving docker logs to ${log_path}..."
+  docker compose "${COMPOSE_FILES[@]}" logs --no-color > "${log_path}" 2>&1 || true
+fi
 
 echo "🧽 Pruning dangling Docker images and networks (build cache preserved)..."
 docker image prune -f >/dev/null

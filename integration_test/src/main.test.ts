@@ -12,12 +12,18 @@ import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_correcto
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:8080/api/v1'
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://admin:password@localhost:5432/eeg_data'
-const OBJECT_STORAGE_ENDPOINT = process.env.MINIO_ENDPOINT ?? 'localhost'
-const OBJECT_STORAGE_PORT = Number.parseInt(process.env.MINIO_PORT ?? '8333', 10)
+const OBJECT_STORAGE_ENDPOINT =
+  process.env.OBJECT_STORAGE_ENDPOINT ?? 'localhost'
+const OBJECT_STORAGE_PORT = Number.parseInt(
+  process.env.OBJECT_STORAGE_PORT ?? '8333',
+  10,
+)
 const OBJECT_STORAGE_USE_SSL =
-  (process.env.MINIO_USE_SSL ?? 'false').toLowerCase() === 'true'
-const OBJECT_STORAGE_ACCESS_KEY = process.env.MINIO_ACCESS_KEY ?? 'storageadmin'
-const OBJECT_STORAGE_SECRET_KEY = process.env.MINIO_SECRET_KEY ?? 'storageadmin'
+  (process.env.OBJECT_STORAGE_USE_SSL ?? 'false').toLowerCase() === 'true'
+const OBJECT_STORAGE_ACCESS_KEY =
+  process.env.OBJECT_STORAGE_ACCESS_KEY ?? 'storageadmin'
+const OBJECT_STORAGE_SECRET_KEY =
+  process.env.OBJECT_STORAGE_SECRET_KEY ?? 'storageadmin'
 const OBJECT_STORAGE_CONFIG = {
   endPoint: OBJECT_STORAGE_ENDPOINT,
   port: OBJECT_STORAGE_PORT,
