@@ -340,18 +340,10 @@ const OBJECT_STORAGE_CONFIG = {
     process.env.OBJECT_STORAGE_SECRET_KEY ??
     'storageadmin',
 }
-const OBJECT_STORAGE_RAW_DATA_BUCKET =
-  process.env.TEST_OBJECT_STORAGE_RAW_DATA_BUCKET ??
-  process.env.OBJECT_STORAGE_RAW_DATA_BUCKET ??
-  'raw-data'
 const OBJECT_STORAGE_MEDIA_BUCKET =
   process.env.TEST_OBJECT_STORAGE_MEDIA_BUCKET ??
   process.env.OBJECT_STORAGE_MEDIA_BUCKET ??
   'media'
-const BIDS_BUCKET =
-  process.env.TEST_OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
-  process.env.OBJECT_STORAGE_BIDS_EXPORTS_BUCKET ??
-  'bids-exports'
 
 function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
   const client = new S3CompatibleClient({

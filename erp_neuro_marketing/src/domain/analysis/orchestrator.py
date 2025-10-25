@@ -5,6 +5,15 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
+import pandas as pd
+from fastapi import HTTPException
+
+from ...config.env import settings
+from ...infrastructure.bids_client import BidsCreationError, request_bids_creation
+from ...infrastructure.db import get_db_connection, get_db_cursor
+from .models import EmoSpecEstimator, ErpDetector
+from .preprocess import create_epochs_from_bids
+
 try:
     from google import genai  # type: ignore[import]
     from google.genai import types  # type: ignore[import]
@@ -14,14 +23,6 @@ except ImportError:  # pragma: no cover - optional dependency guard
 
 genai = cast(Any, genai)
 types = cast(Any, types)
-import pandas as pd
-from fastapi import HTTPException
-
-from ...config.env import settings
-from ...infrastructure.bids_client import BidsCreationError, request_bids_creation
-from ...infrastructure.db import get_db_connection, get_db_cursor
-from .models import EmoSpecEstimator, ErpDetector
-from .preprocess import create_epochs_from_bids
 
 # --- ロガー設定 ---
 logger = logging.getLogger(__name__)

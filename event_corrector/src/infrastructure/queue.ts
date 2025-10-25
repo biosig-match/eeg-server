@@ -1,11 +1,15 @@
-import amqp, { Channel, Connection, ConsumeMessage } from 'amqplib'
+import amqp from 'amqplib'
+import type { ConsumeMessage } from 'amqplib'
 import { config } from '../config/env'
 import { eventCorrectorJobPayloadSchema } from '../app/schemas/job'
 import { handleEventCorrectorJob } from '../domain/services/corrector'
 import type { EventCorrectorJobPayload } from '../app/schemas/job'
 
-let amqpConnection: Connection | null = null
-let amqpChannel: Channel | null = null
+type AmqpConnection = Awaited<ReturnType<typeof amqp.connect>>
+type AmqpChannel = Awaited<ReturnType<AmqpConnection['createChannel']>>
+
+let amqpConnection: AmqpConnection | null = null
+let amqpChannel: AmqpChannel | null = null
 let consumerTag: string | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 

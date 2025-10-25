@@ -1,4 +1,5 @@
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 class BackgroundTasks:
     def add_task(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> None: ...
