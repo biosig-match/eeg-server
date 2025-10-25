@@ -20,6 +20,6 @@
     "@types/amqplib": "^0.10.5",
     "@types/minio": "^7.1.1",
     "@types/pg": "^8.11.6",
-    "dotenv": "^16.4.5"
+    "dotenv": "^17.2.3"
   }
 }
