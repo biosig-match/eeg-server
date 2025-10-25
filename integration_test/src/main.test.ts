@@ -9,6 +9,11 @@ import { Buffer } from 'buffer'
 import neatCSV from 'neat-csv'
 import { parsePayloadsAndExtractTriggerTimestampsUs } from '../../event_corrector/src/domain/services/trigger_timestamps'
 
+const shouldPersistBidsArtifacts =
+  (process.env.INTEGRATION_TEST_PERSIST_BIDS_OUTPUT ??
+    process.env.TEST_SAVE_BIDS_OUTPUT ??
+    '').toLowerCase() === 'true'
+
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
 
 const parseHostname = (value?: string) => {
@@ -1148,7 +1153,7 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
   ctx.bidsArchiveEntries = Object.keys(zip.files)
   ctx.zip = zip
   console.log(`✅ BIDS archive downloaded and contains ${ctx.bidsArchiveEntries.length} files.`)
-  if (ctx.bidsTaskId) {
+  if (ctx.bidsTaskId && shouldPersistBidsArtifacts) {
     const zipOutputPath = path.join(TEST_OUTPUT_DIR, `bids_task_${ctx.bidsTaskId}.zip`)
     await fs.writeFile(zipOutputPath, ctx.zipBuffer)
     const extractionDir = path.join(TEST_OUTPUT_DIR, `bids_task_${ctx.bidsTaskId}`)
@@ -1156,6 +1161,8 @@ async function runTestScenario(config: ScenarioConfig): Promise<WorkflowContext>
     ctx.bidsZipPath = zipOutputPath
     ctx.bidsExtractedDir = extractionDir
     console.log(`📁 BIDS archive extracted to ${extractionDir}`)
+  } else if (!shouldPersistBidsArtifacts) {
+    console.log('ℹ️ Skipping BIDS archive persistence per configuration.')
   }
 
   if (withEvents) {
@@ -1233,7 +1240,11 @@ beforeAll(async () => {
   await waitForHttpOk(`${API_ROOT}/api/v1/health`, {
     description: 'API gateway /api/v1/health endpoint',
   })
-  await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
+  if (shouldPersistBidsArtifacts) {
+    await fs.mkdir(TEST_OUTPUT_DIR, { recursive: true })
+  } else {
+    console.log('ℹ️ BIDS archive persistence is disabled; skipping local extraction directory setup.')
+  }
 })
 
 afterAll(async () => {
