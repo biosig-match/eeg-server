@@ -501,8 +501,6 @@ type ObjectStorageTestClient = ReturnType<typeof createObjectStorageTestClient>
 
 let objectStorageClient: ObjectStorageTestClient
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
 async function pollForDbStatus(
   query: string,
   params: any[],
