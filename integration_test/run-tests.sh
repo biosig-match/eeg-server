@@ -42,6 +42,9 @@ else
 fi
 "${BUILD_CMD[@]}"
 
+echo "🧹 Removing Docker builder cache before starting services..."
+docker builder prune -f >/dev/null 2>&1 || true
+
 echo "🚀 Starting services and running integration tests..."
 set +e
 docker compose "${COMPOSE_FILES[@]}" up --abort-on-container-exit integration-test
@@ -54,7 +57,7 @@ if [[ ${EXIT_CODE} -ne 0 ]] && [[ "${SAVE_LOGS_ON_FAILURE:-1}" == "1" ]]; then
   docker compose "${COMPOSE_FILES[@]}" logs --no-color > "${log_path}" 2>&1 || true
 fi
 
-echo "🧽 Pruning dangling Docker images and networks (build cache preserved)..."
+echo "🧽 Pruning dangling Docker images and networks..."
 docker image prune -f >/dev/null
 docker network prune -f >/dev/null
 

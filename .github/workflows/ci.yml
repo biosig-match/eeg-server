@@ -172,6 +172,8 @@ jobs:
           fi
           nginx_port="${NGINX_PORT:-8080}"
           curl -fsS --max-time 10 "http://localhost:${nginx_port}/api/v1/health"
+      - name: Trim Docker builder cache (frees disk space before tests)
+        run: docker builder prune -f
       - name: Run integration test suite
         env:
           TEST_TIMEOUT: ${{ env.TEST_TIMEOUT || '300000' }}
