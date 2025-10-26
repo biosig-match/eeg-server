@@ -17,7 +17,7 @@ services:
       -volume.port=8080
       -volume.port.grpc=18080
       -volume.max=0
-      -volume.preallocate=0
+      -master.volumePreallocate=false
       -master.port=9333
       -master.port.grpc=19333
 
