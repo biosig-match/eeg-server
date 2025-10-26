@@ -1,4 +1,26 @@
 services:
+  # Disable volume preallocation in CI to prevent disk space exhaustion
+  # SeaweedFS's default 1GB preallocation per volume causes "No more free space left"
+  # errors in GitHub Actions runners (14GB total disk space)
+  object-storage:
+    command: >
+      server
+      -dir=/data
+      -s3
+      -s3.port=${OBJECT_STORAGE_PORT}
+      -s3.port.grpc=18333
+      -filer
+      -filer.port=8888
+      -filer.port.grpc=18888
+      -ip=object-storage
+      -ip.bind=0.0.0.0
+      -volume.port=8080
+      -volume.port.grpc=18080
+      -volume.max=0
+      -volume.preallocate=0
+      -master.port=9333
+      -master.port.grpc=19333
+
   integration-test:
     build:
       context: .
