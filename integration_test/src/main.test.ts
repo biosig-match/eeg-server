@@ -659,6 +659,26 @@ async function runScenarioExclusive<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+const scenarioFactories = new Map<string, () => Promise<WorkflowContext>>()
+const scenarioPromises = new Map<string, Promise<WorkflowContext>>()
+
+function registerScenario(key: string, factory: () => Promise<WorkflowContext>) {
+  scenarioFactories.set(key, factory)
+}
+
+function ensureScenario(key: string): Promise<WorkflowContext> {
+  let existing = scenarioPromises.get(key)
+  if (!existing) {
+    const factory = scenarioFactories.get(key)
+    if (!factory) {
+      throw new Error(`Scenario factory not registered for key "${key}".`)
+    }
+    existing = (async () => factory())()
+    scenarioPromises.set(key, existing)
+  }
+  return existing
+}
+
 async function pollForDbStatus(
   query: string,
   params: any[],
@@ -1297,26 +1317,27 @@ afterAll(async () => {
 
 describe('Integration Test Suite', () => {
   describe('Scenario 1: Custom EEG with Events and Triggers', () => {
-    let workflowPromise: Promise<WorkflowContext> | null = null
     const ownerId = `owner-eeg-${Date.now()}`
     const participantId = `part-eeg-${Date.now()}`
     const strangerId = `stranger-eeg-${Date.now()}`
+    const scenarioKey = 'scenario:custom-eeg-with-events'
+
+    registerScenario(scenarioKey, () =>
+      runScenarioExclusive(async () => {
+        await resetDatabase()
+        await seedCalibrationAssets()
+        return runTestScenario({
+          deviceProfile: MOCK_CUSTOM_EEG_DEVICE,
+          withEvents: true,
+          ownerId,
+          participantId,
+          strangerId,
+        })
+      }),
+    )
 
     const ensureWorkflow = async (): Promise<WorkflowContext> => {
-      if (!workflowPromise) {
-        workflowPromise = runScenarioExclusive(async () => {
-          await resetDatabase()
-          await seedCalibrationAssets()
-          return runTestScenario({
-            deviceProfile: MOCK_CUSTOM_EEG_DEVICE,
-            withEvents: true,
-            ownerId,
-            participantId,
-            strangerId,
-          })
-        })
-      }
-      return workflowPromise!
+      return ensureScenario(scenarioKey)
     }
 
     test(
@@ -1577,26 +1598,30 @@ describe('Integration Test Suite', () => {
   })
 
   describe('Scenario 2: Muse 2 without Events or Triggers', () => {
-    let workflowPromise: Promise<WorkflowContext> | null = null
     const ownerId = `owner-muse-${Date.now()}`
     const participantId = `part-muse-${Date.now()}`
     const strangerId = `stranger-muse-${Date.now()}`
+    const scenarioKey = 'scenario:muse2-without-events'
+    const dependencyKey = 'scenario:custom-eeg-with-events'
+
+    registerScenario(scenarioKey, () =>
+      runScenarioExclusive(async () => {
+        // Ensure Scenario 1 has finished before resetting shared fixtures.
+        await ensureScenario(dependencyKey)
+        await resetDatabase()
+        await seedCalibrationAssets()
+        return runTestScenario({
+          deviceProfile: MOCK_MUSE2_DEVICE,
+          withEvents: false,
+          ownerId,
+          participantId,
+          strangerId,
+        })
+      }),
+    )
 
     const ensureWorkflow = async (): Promise<WorkflowContext> => {
-      if (!workflowPromise) {
-        workflowPromise = runScenarioExclusive(async () => {
-          await resetDatabase()
-          await seedCalibrationAssets()
-          return runTestScenario({
-            deviceProfile: MOCK_MUSE2_DEVICE,
-            withEvents: false,
-            ownerId,
-            participantId,
-            strangerId,
-          })
-        })
-      }
-      return workflowPromise!
+      return ensureScenario(scenarioKey)
     }
 
     test(
