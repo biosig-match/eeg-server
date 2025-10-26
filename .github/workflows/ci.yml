@@ -131,7 +131,14 @@ jobs:
       - name: Start docker-compose stack
         run: |
           set -euo pipefail
-          docker compose ${{ env.COMPOSE_FILES }} up -d --wait
+          profiles="${COMPOSE_PROFILES:-}"
+          services=$(COMPOSE_PROFILES="${profiles}" docker compose ${{ env.COMPOSE_FILES }} config --services | grep -v '^integration-test$' | xargs)
+          if [ -z "${services}" ]; then
+            echo "::error::Failed to resolve compose services to start."
+            exit 1
+          fi
+          echo "Starting compose services (excluding integration-test): ${services}"
+          docker compose ${{ env.COMPOSE_FILES }} up -d --wait ${services}
       - name: Verify service health endpoints
         run: |
           set -euo pipefail
