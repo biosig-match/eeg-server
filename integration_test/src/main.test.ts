@@ -637,6 +637,28 @@ type ObjectStorageTestClient = ReturnType<typeof createObjectStorageTestClient>
 
 let objectStorageClient: ObjectStorageTestClient
 
+/**
+ * Bun のテストランナーは describe 単位で並列実行される場合があり、
+ * シナリオごとに行っている DB リセットが競合するとレコードが消えて
+ * ポーリング対象が「存在しない」ままタイムアウトしてしまう。
+ * これを防ぐため、バックグラウンドジョブが完了するまでシナリオ実行を直列化する。
+ */
+let workflowMutex: Promise<void> = Promise.resolve()
+
+async function runScenarioExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = workflowMutex
+  let release!: () => void
+  workflowMutex = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await previous
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
 async function pollForDbStatus(
   query: string,
   params: any[],
@@ -1282,7 +1304,7 @@ describe('Integration Test Suite', () => {
 
     const ensureWorkflow = async (): Promise<WorkflowContext> => {
       if (!workflowPromise) {
-        workflowPromise = (async () => {
+        workflowPromise = runScenarioExclusive(async () => {
           await resetDatabase()
           await seedCalibrationAssets()
           return runTestScenario({
@@ -1292,7 +1314,7 @@ describe('Integration Test Suite', () => {
             participantId,
             strangerId,
           })
-        })()
+        })
       }
       return workflowPromise!
     }
@@ -1562,7 +1584,7 @@ describe('Integration Test Suite', () => {
 
     const ensureWorkflow = async (): Promise<WorkflowContext> => {
       if (!workflowPromise) {
-        workflowPromise = (async () => {
+        workflowPromise = runScenarioExclusive(async () => {
           await resetDatabase()
           await seedCalibrationAssets()
           return runTestScenario({
@@ -1572,7 +1594,7 @@ describe('Integration Test Suite', () => {
             participantId,
             strangerId,
           })
-        })()
+        })
       }
       return workflowPromise!
     }
