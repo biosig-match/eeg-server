@@ -32,6 +32,9 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
+      - RABBITMQ_NODENAME=${RABBITMQ_NODENAME:-rabbit@eeg_rabbitmq}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     networks:
       - eeg-network
     healthcheck:
@@ -610,6 +613,7 @@ volumes:
   pg_data:
   object_storage_data:
   bids_exports_volume:
+  rabbitmq_data:
 
 networks:
   eeg-network:
