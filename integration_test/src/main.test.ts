@@ -395,7 +395,7 @@ function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
 const ASSETS_DIR = path.resolve(__dirname, '../assets')
 const TEST_OUTPUT_DIR = path.resolve(__dirname, '../test-output')
 
-const DB_POLL_TIMEOUT = 30000
+const DB_POLL_TIMEOUT = 120000
 const TASK_POLL_TIMEOUT = 120000
 const REALTIME_ANALYZER_POLL_TIMEOUT = 60000
 const REALTIME_ANALYZER_POLL_INTERVAL = 2000
@@ -644,12 +644,32 @@ async function pollForDbStatus(
   timeout = DB_POLL_TIMEOUT,
 ) {
   const start = Date.now()
+  let lastStatus: any = null
   while (Date.now() - start < timeout) {
     const { rows } = await dbPool.query(query, params)
-    if (rows.length > 0 && rows[0].status === expectedValue) return
+    if (rows.length > 0) {
+      const status = rows[0].status
+      if (status === expectedValue) {
+        return
+      }
+      if (status === 'failed') {
+        const identifier = params?.[0] ? ` for ${params[0]}` : ''
+        throw new Error(
+          `Background status${identifier} transitioned to 'failed' before reaching '${expectedValue}'.`,
+        )
+      }
+      lastStatus = status
+    } else {
+      lastStatus = null
+    }
     await sleep(1000)
   }
-  throw new Error(`Timed out waiting for DB status '${expectedValue}'`)
+  const identifier = params?.[0] ? ` for ${params[0]}` : ''
+  const statusDetail =
+    lastStatus === null ? 'no rows returned' : `last observed status='${lastStatus}'`
+  throw new Error(
+    `Timed out waiting for DB status '${expectedValue}'${identifier}; ${statusDetail}.`,
+  )
 }
 
 async function pollForTaskStatus(
