@@ -17,6 +17,6 @@
   "devDependencies": {
     "@types/minio": "^7.1.1",
     "@types/pg-format": "^1.0.4",
-    "dotenv": "^16.4.5"
+    "dotenv": "^17.2.3"
   }
 }
