@@ -3,31 +3,24 @@ x-common-logging: &common-logging
   options:
     max-size: '10m'
     max-file: '3'
-
 x-postgres-env: &postgres-env
   POSTGRES_USER: ${POSTGRES_USER}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
   POSTGRES_DB: ${POSTGRES_DB}
   POSTGRES_HOST: ${POSTGRES_HOST}
-
 x-rabbitmq-env: &rabbitmq-env
   RABBITMQ_USER: ${RABBITMQ_USER}
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
   RABBITMQ_HOST: ${RABBITMQ_HOST}
-
 x-object-storage-env: &object-storage-env
   OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT}
   OBJECT_STORAGE_PORT: ${OBJECT_STORAGE_PORT}
   OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY}
   OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY}
   OBJECT_STORAGE_USE_SSL: ${OBJECT_STORAGE_USE_SSL}
-
 services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
-    ports:
-      - '${RABBITMQ_MGMT_PORT}:15672'
-      - '${RABBITMQ_PORT}:5672'
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
@@ -42,11 +35,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-
   db:
     image: timescale/timescaledb-ha:pg16-ts2.14
-    ports:
-      - '${POSTGRES_PORT}:5432'
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -62,35 +52,18 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-
   object-storage:
     image: chrislusf/seaweedfs:latest
-    ports:
-      - '${OBJECT_STORAGE_PORT}:${OBJECT_STORAGE_PORT}'
     volumes:
       - object_storage_data:/data
     environment:
       - AWS_ACCESS_KEY_ID=${OBJECT_STORAGE_ACCESS_KEY}
       - AWS_SECRET_ACCESS_KEY=${OBJECT_STORAGE_SECRET_KEY}
     command: >
-      server
-      -dir=/data
-      -s3
-      -s3.port=${OBJECT_STORAGE_PORT}
-      -s3.port.grpc=18333
-      -filer
-      -filer.port=8888
-      -filer.port.grpc=18888
-      -ip=object-storage
-      -ip.bind=0.0.0.0
-      -volume.port=8080
-      -volume.port.grpc=18080
-      -volume.max=0
-      -master.port=9333
-      -master.port.grpc=19333
+      server -dir=/data -s3 -s3.port=${OBJECT_STORAGE_PORT} -s3.port.grpc=18333 -filer -filer.port=8888 -filer.port.grpc=18888 -ip=object-storage -ip.bind=0.0.0.0 -volume.port=8080 -volume.port.grpc=18080 -volume.max=0 -master.port=9333 -master.port.grpc=19333
+
     networks:
       - eeg-network
-
   object-storage-bootstrap:
     image: alpine:3.20
     depends_on:
@@ -166,7 +139,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      <<: *rabbitmq-env
+      !!merge <<: *rabbitmq-env
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
     networks:
       - eeg-network
@@ -182,7 +155,6 @@ services:
           cpus: '0.5'
           memory: 256M
     logging: *common-logging
-
   processor:
     build:
       context: .
@@ -198,7 +170,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
+      !!merge <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
@@ -216,7 +188,6 @@ services:
           cpus: '1.0'
           memory: 512M
     logging: *common-logging
-
   media_processor:
     build:
       context: .
@@ -232,7 +203,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
+      !!merge <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
@@ -250,7 +221,6 @@ services:
           cpus: '1.0'
           memory: 512M
     logging: *common-logging
-
   realtime_analyzer:
     build:
       context: .
@@ -276,7 +246,6 @@ services:
           cpus: '1.0'
           memory: 512M
     logging: *common-logging
-
   observability_dashboard:
     build:
       context: .
@@ -292,7 +261,7 @@ services:
       object-storage:
         condition: service_started
     environment:
-      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       RABBITMQ_MGMT_PORT: ${RABBITMQ_MGMT_PORT}
       RAW_DATA_EXCHANGE: ${RAW_DATA_EXCHANGE}
       PROCESSING_QUEUE: ${PROCESSING_QUEUE}
@@ -307,8 +276,6 @@ services:
       OBSERVABILITY_BASIC_USER: ${OBSERVABILITY_BASIC_USER:-observer}
       OBSERVABILITY_BASIC_PASSWORD: ${OBSERVABILITY_BASIC_PASSWORD:-changeme}
       OBSERVABILITY_BASIC_REALM: ${OBSERVABILITY_BASIC_REALM:-Observability Dashboard}
-    ports:
-      - '${OBSERVABILITY_PORT-8090}:9000'
     networks:
       - eeg-network
     healthcheck:
@@ -323,12 +290,9 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
-
   ingress:
     build: ./nginx
     restart: unless-stopped
-    ports:
-      - '0.0.0.0:${NGINX_PORT}:80'
     depends_on:
       collector:
         condition: service_started
@@ -350,7 +314,6 @@ services:
           cpus: '0.5'
           memory: 256M
     logging: *common-logging
-
   session_manager:
     build:
       context: .
@@ -366,7 +329,7 @@ services:
       auth_manager:
         condition: service_started
     environment:
-      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       PORT: 3000
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
@@ -388,7 +351,6 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
-
   stimulus_asset_processor:
     build:
       context: .
@@ -404,7 +366,7 @@ services:
       object-storage-bootstrap:
         condition: service_completed_successfully
     environment:
-      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
     networks:
@@ -421,7 +383,6 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
-
   auth_manager:
     build:
       context: .
@@ -433,7 +394,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      <<: *postgres-env
+      !!merge <<: *postgres-env
       PORT: 3000
     networks:
       - eeg-network
@@ -449,7 +410,6 @@ services:
           cpus: '0.3'
           memory: 256M
     logging: *common-logging
-
   data_linker:
     build:
       context: .
@@ -463,7 +423,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      <<: [*postgres-env, *rabbitmq-env]
+      !!merge <<: [*postgres-env, *rabbitmq-env]
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
     networks:
@@ -480,7 +440,6 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
-
   event_corrector:
     build:
       context: .
@@ -496,7 +455,7 @@ services:
       object-storage-bootstrap:
         condition: service_completed_successfully
     environment:
-      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
       SAMPLE_RATE: 256
@@ -514,7 +473,6 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
-
   bids_exporter:
     build:
       context: .
@@ -531,7 +489,7 @@ services:
       object-storage-bootstrap:
         condition: service_completed_successfully
     environment:
-      <<: [*postgres-env, *object-storage-env]
+      !!merge <<: [*postgres-env, *object-storage-env]
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
@@ -551,7 +509,6 @@ services:
           cpus: '0.5'
           memory: 512M
     logging: *common-logging
-
   erp_neuro_marketing:
     build:
       context: .
@@ -567,12 +524,10 @@ services:
         condition: service_started
       bids_exporter:
         condition: service_started
-    ports:
-      - '${ERP_SERVICE_PORT}:8001'
     volumes:
       - bids_exports_volume:/export_data
     environment:
-      <<: *postgres-env
+      !!merge <<: *postgres-env
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       BIDS_EXPORTER_URL: http://bids_exporter:8000
       AUTH_MANAGER_URL: http://auth_manager:3000
@@ -592,13 +547,11 @@ services:
           cpus: '1.0'
           memory: 768M
     logging: *common-logging
-
 volumes:
   pg_data:
   object_storage_data:
   bids_exports_volume:
   rabbitmq_data:
-
 networks:
   eeg-network:
     driver: bridge
