@@ -24,7 +24,7 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
-      - RABBITMQ_NODENAME=${RABBITMQ_NODENAME:-rabbit@eeg_rabbitmq}
+      - RABBITMQ_NODENAME=${RABBITMQ_NODENAME:-rabbit@rabbitmq}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
