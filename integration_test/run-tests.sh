@@ -10,14 +10,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 COMPOSE_FILES=(-f "${PROJECT_ROOT}/docker-compose.yml")
-# Prefer environment-specific overrides when present:
-# - docker-compose.development.yml: CI/integration specific tweaks
-# - docker-compose.override.yml: local developer overrides
+# Compose overrides are applied in declaration order; include all that exist so that
+# environment-specific tweaks (development) are layered before local overrides.
 if [[ -f "${PROJECT_ROOT}/docker-compose.development.yml" ]]; then
   COMPOSE_FILES+=(-f "${PROJECT_ROOT}/docker-compose.development.yml")
-elif [[ -f "${PROJECT_ROOT}/docker-compose.override.yml" ]]; then
+fi
+if [[ -f "${PROJECT_ROOT}/docker-compose.override.yml" ]]; then
   COMPOSE_FILES+=(-f "${PROJECT_ROOT}/docker-compose.override.yml")
-else
+fi
+if [[ ${#COMPOSE_FILES[@]} -eq 1 ]]; then
   echo "⚠️  Warning: No override compose file detected; using base definitions only."
 fi
 COMPOSE_FILES+=(-f "${PROJECT_ROOT}/docker-compose.test.yml")
