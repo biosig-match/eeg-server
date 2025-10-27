@@ -51,6 +51,14 @@ jobs:
             | yq eval 'del(.services.[].container_name) | del(.services.[].ports)' - \
             > .coolify/docker-compose.production.yml
 
+          # Compose ファイルは .coolify 配下に置かれるため、ビルドコンテキストや
+          # ファイルマウントの相対パスを 1 階層戻す
+          for file in .coolify/docker-compose.*.yml; do
+            perl -0pi -e 's/context: \.\n/context: ..\n/g' "$file"
+            perl -0pi -e 's/\- \.\/- ..\//g' "$file"
+            perl -0pi -e 's/build: \.\/build: ..\//g' "$file"
+          done
+
       - name: Ensure generated files are committed
         if: github.event_name == 'pull_request'
         run: |
