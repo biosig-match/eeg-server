@@ -54,9 +54,9 @@ jobs:
           # Compose ファイルは .coolify 配下に置かれるため、ビルドコンテキストや
           # ファイルマウントの相対パスを 1 階層戻す
           for file in .coolify/docker-compose.*.yml; do
-            perl -0pi -e 's/context: \.\n/context: ..\n/g' "$file"
-            perl -0pi -e 's/\- \.\/- ..\//g' "$file"
-            perl -0pi -e 's/build: \.\/build: ..\//g' "$file"
+            sed -i 's#context: \.#context: ..#g' "$file"
+            sed -i 's#- \./#- ../#g' "$file"
+            sed -i 's#build: \./#build: ../#g' "$file"
           done
 
       - name: Ensure generated files are committed
