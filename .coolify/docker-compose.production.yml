@@ -39,7 +39,7 @@ services:
     image: timescale/timescaledb-ha:pg16-ts2.14
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -130,7 +130,7 @@ services:
       - eeg-network
   collector:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: collector
@@ -157,7 +157,7 @@ services:
     logging: *common-logging
   processor:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: processor
@@ -190,7 +190,7 @@ services:
     logging: *common-logging
   media_processor:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: media_processor
@@ -223,7 +223,7 @@ services:
     logging: *common-logging
   realtime_analyzer:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.python
       args:
         SERVICE_NAME: realtime_analyzer
@@ -248,7 +248,7 @@ services:
     logging: *common-logging
   observability_dashboard:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: observability_dashboard
@@ -291,7 +291,7 @@ services:
           memory: 384M
     logging: *common-logging
   ingress:
-    build: ./nginx
+    build: ../nginx
     restart: unless-stopped
     depends_on:
       collector:
@@ -316,7 +316,7 @@ services:
     logging: *common-logging
   session_manager:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: session_manager
@@ -353,7 +353,7 @@ services:
     logging: *common-logging
   stimulus_asset_processor:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: stimulus_asset_processor
@@ -385,7 +385,7 @@ services:
     logging: *common-logging
   auth_manager:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: auth_manager
@@ -412,7 +412,7 @@ services:
     logging: *common-logging
   data_linker:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: data_linker
@@ -442,7 +442,7 @@ services:
     logging: *common-logging
   event_corrector:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: event_corrector
@@ -475,7 +475,7 @@ services:
     logging: *common-logging
   bids_exporter:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.python
       args:
         SERVICE_NAME: bids_exporter
@@ -511,7 +511,7 @@ services:
     logging: *common-logging
   erp_neuro_marketing:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.python
       args:
         SERVICE_NAME: erp_neuro_marketing
