@@ -1,63 +1,13 @@
 services:
-  collector:
-    volumes:
-      - ./collector/src:/app/collector/src
-      - ./collector/tsconfig.json:/app/collector/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-  processor:
-    volumes:
-      - ./processor/src:/app/processor/src
-      - ./processor/tsconfig.json:/app/processor/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-      - ./shared:/app/shared:ro
-  media_processor:
-    volumes:
-      - ./media_processor/src:/app/media_processor/src
-      - ./media_processor/tsconfig.json:/app/media_processor/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-      - ./shared:/app/shared:ro
-  realtime_analyzer:
-    volumes:
-      - ./realtime_analyzer/src:/app/src
-  session_manager:
-    volumes:
-      - ./session_manager/src:/app/session_manager/src
-      - ./session_manager/tsconfig.json:/app/session_manager/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-      - ./shared:/app/shared:ro
-  stimulus_asset_processor:
-    volumes:
-      - ./stimulus_asset_processor/src:/app/stimulus_asset_processor/src
-      - ./stimulus_asset_processor/tsconfig.json:/app/stimulus_asset_processor/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-      - ./shared:/app/shared:ro
-  auth_manager:
-    volumes:
-      - ./auth_manager/src:/app/auth_manager/src
-      - ./auth_manager/tsconfig.json:/app/auth_manager/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-  data_linker:
-    volumes:
-      - ./data_linker/src:/app/data_linker/src
-      - ./data_linker/tsconfig.json:/app/data_linker/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-  event_corrector:
-    volumes:
-      - ./event_corrector/src:/app/event_corrector/src
-      - ./event_corrector/tsconfig.json:/app/event_corrector/tsconfig.json:ro
-      - ./node_modules:/app/node_modules
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
-      - ./shared:/app/shared:ro
-  bids_exporter:
-    volumes:
-      - ./bids_exporter/src:/app/src
+  db:
+    ports: []
+  rabbitmq:
+    ports: []
+  object-storage:
+    ports: []
   erp_neuro_marketing:
-    volumes:
-      - ./erp_neuro_marketing/src:/app/src
+    ports: []
+  ingress:
+    ports: []
+  observability_dashboard:
+    ports: []
