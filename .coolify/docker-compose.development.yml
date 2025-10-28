@@ -38,7 +38,7 @@ services:
   db:
     image: timescale/timescaledb-ha:pg16-ts2.14
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pg_data:/home/postgres/pgdata/data
       - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
