@@ -139,7 +139,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      !!merge <<: *rabbitmq-env
+      <<: *rabbitmq-env
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
     networks:
       - eeg-network
@@ -170,7 +170,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      !!merge <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
+      <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
@@ -203,7 +203,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      !!merge <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
+      <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
@@ -261,7 +261,7 @@ services:
       object-storage:
         condition: service_started
     environment:
-      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       RABBITMQ_MGMT_PORT: ${RABBITMQ_MGMT_PORT}
       RAW_DATA_EXCHANGE: ${RAW_DATA_EXCHANGE}
       PROCESSING_QUEUE: ${PROCESSING_QUEUE}
@@ -329,7 +329,7 @@ services:
       auth_manager:
         condition: service_started
     environment:
-      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       PORT: 3000
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
@@ -366,7 +366,7 @@ services:
       object-storage-bootstrap:
         condition: service_completed_successfully
     environment:
-      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
     networks:
@@ -394,7 +394,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      !!merge <<: *postgres-env
+      <<: *postgres-env
       PORT: 3000
     networks:
       - eeg-network
@@ -423,7 +423,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      !!merge <<: [*postgres-env, *rabbitmq-env]
+      <<: [*postgres-env, *rabbitmq-env]
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
     networks:
@@ -455,7 +455,7 @@ services:
       object-storage-bootstrap:
         condition: service_completed_successfully
     environment:
-      !!merge <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
       SAMPLE_RATE: 256
@@ -489,7 +489,7 @@ services:
       object-storage-bootstrap:
         condition: service_completed_successfully
     environment:
-      !!merge <<: [*postgres-env, *object-storage-env]
+      <<: [*postgres-env, *object-storage-env]
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
@@ -527,7 +527,7 @@ services:
     volumes:
       - bids_exports_volume:/export_data
     environment:
-      !!merge <<: *postgres-env
+      <<: *postgres-env
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       BIDS_EXPORTER_URL: http://bids_exporter:8000
       AUTH_MANAGER_URL: http://auth_manager:3000
