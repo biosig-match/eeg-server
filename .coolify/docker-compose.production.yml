@@ -66,6 +66,8 @@ services:
       - eeg-network
   object-storage-bootstrap:
     image: alpine:3.20
+    restart: 'no'
+    exclude_from_hc: true
     depends_on:
       object-storage:
         condition: service_started
@@ -295,19 +297,25 @@ services:
     restart: unless-stopped
     depends_on:
       collector:
-        condition: service_started
+        condition: service_healthy
       realtime_analyzer:
-        condition: service_started
+        condition: service_healthy
       session_manager:
-        condition: service_started
+        condition: service_healthy
       auth_manager:
-        condition: service_started
+        condition: service_healthy
       erp_neuro_marketing:
-        condition: service_started
+        condition: service_healthy
       bids_exporter:
-        condition: service_started
+        condition: service_healthy
     networks:
       - eeg-network
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost/nginx-health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     deploy:
       resources:
         limits:
@@ -327,7 +335,7 @@ services:
       rabbitmq:
         condition: service_healthy
       auth_manager:
-        condition: service_started
+        condition: service_healthy
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       PORT: 3000
@@ -521,9 +529,9 @@ services:
       db:
         condition: service_healthy
       auth_manager:
-        condition: service_started
+        condition: service_healthy
       bids_exporter:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - bids_exports_volume:/export_data
     environment:
