@@ -57,6 +57,7 @@ jobs:
             sed -i 's#context: \.#context: ..#g' "$file"
             sed -i 's#- \./#- ../#g' "$file"
             sed -i 's#build: \./#build: ../#g' "$file"
+            sed -i -E 's/!!merge[[:space:]]+<<:/<<:/g' "$file"
           done
 
       - name: Ensure generated files are committed
