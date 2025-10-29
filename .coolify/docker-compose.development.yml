@@ -52,6 +52,29 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+  db-init:
+    image: postgres:16-alpine
+    restart: 'no'
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - PGUSER=${POSTGRES_USER}
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -euo pipefail
+        until pg_isready -h db -p 5432 -U "$${PGUSER}"; do
+          sleep 2
+        done
+        psql "postgres://$${PGUSER}:$${PGPASSWORD}@db:5432/${POSTGRES_DB}" -f /init/init.sql
+        echo "✅ Database schema initialized."
+    volumes:
+      - ../db/init.sql:/init/init.sql:ro
+    networks:
+      - eeg-network
   object-storage:
     image: chrislusf/seaweedfs:latest
     volumes:
