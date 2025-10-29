@@ -67,10 +67,10 @@ services:
       - -c
       - |
         set -euo pipefail
-        until pg_isready -h db -p 5432 -U "$${PGUSER}" -d "${POSTGRES_DB}"; do
+        until pg_isready -h db -p 5432 -U "$PGUSER" -d "$POSTGRES_DB"; do
           sleep 2
         done
-        psql "postgres://$${PGUSER}:$${PGPASSWORD}@db:5432/${POSTGRES_DB}" --set ON_ERROR_STOP=on -f /initdb/init.sql
+        psql "postgres://$PGUSER:$PGPASSWORD@db:5432/$POSTGRES_DB" --set ON_ERROR_STOP=on -f /initdb/init.sql
         echo "✅ Database schema initialized."
     volumes:
       - ../db:/initdb:ro
