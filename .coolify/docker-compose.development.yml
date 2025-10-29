@@ -59,18 +59,16 @@ services:
       db:
         condition: service_healthy
     environment:
-      - PGUSER=${POSTGRES_USER}
-      - PGPASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      <<: *postgres-env
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -euo pipefail
-        until pg_isready -h db -p 5432 -U "$PGUSER" -d "$POSTGRES_DB"; do
+        until pg_isready -h "$$POSTGRES_HOST" -p 5432 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"; do
           sleep 2
         done
-        psql "postgres://$PGUSER:$PGPASSWORD@db:5432/$POSTGRES_DB" --set ON_ERROR_STOP=on -f /initdb/init.sql
+        psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" --set ON_ERROR_STOP=on -f /initdb/init.sql
         echo "✅ Database schema initialized."
     volumes:
       - ../db:/initdb:ro
