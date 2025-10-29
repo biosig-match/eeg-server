@@ -355,6 +355,19 @@ services:
         condition: service_healthy
       bids_exporter:
         condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.middlewares.ingress-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.ingress-redirect.redirectscheme.permanent=true
+      - traefik.http.routers.ingress-http.rule=Host(`dev-eeg.satou-jayo.cc`) && PathPrefix(`/`)
+      - traefik.http.routers.ingress-http.entrypoints=http
+      - traefik.http.routers.ingress-http.middlewares=ingress-redirect
+      - traefik.http.routers.ingress-http.service=ingress-service
+      - traefik.http.routers.ingress-https.rule=Host(`dev-eeg.satou-jayo.cc`) && PathPrefix(`/`)
+      - traefik.http.routers.ingress-https.entrypoints=https
+      - traefik.http.routers.ingress-https.tls=true
+      - traefik.http.routers.ingress-https.service=ingress-service
+      - traefik.http.services.ingress-service.loadbalancer.server.port=80
     networks:
       - eeg-network
     healthcheck:
