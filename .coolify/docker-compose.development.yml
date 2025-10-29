@@ -76,6 +76,7 @@ services:
       - |
         set -euo pipefail
         echo "Listing /initdb:"; ls -lah /initdb || true
+        echo "Using Postgres host: $$POSTGRES_HOST, database: $$POSTGRES_DB, user: $$POSTGRES_USER"
         # Wait for DB
         until pg_isready -h "$$POSTGRES_HOST" -p 5432 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"; do
           sleep 2
@@ -84,12 +85,18 @@ services:
         EXISTS=$$(psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" -Atqc \
           "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='raw_data_objects');")
         if [ "$$EXISTS" = "t" ]; then
-          echo "✅ Schema already present. Skipping."
-          exit 0
+          echo "NOTE: Existing schema detected. Reapplying init.sql to capture new tables or migrations."
+        else
+          echo "Applying initial schema from /initdb/init.sql..."
         fi
-        echo "▶ Applying schema from /initdb/init.sql …"
         psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" --set ON_ERROR_STOP=on -f /initdb/init.sql
-        echo "✅ Database schema initialized."
+        TABLE_EXISTS=$$(psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" -Atqc "SELECT to_regclass('public.experiment_participants') IS NOT NULL;")
+        if [ "$$TABLE_EXISTS" = "t" ]; then
+          echo "✅ Database schema synchronized (experiment_participants detected)."
+        else
+          echo "❌ ERROR: experiment_participants table not found after init.sql!"
+          exit 1
+        fi
     networks:
       - eeg-network
 
