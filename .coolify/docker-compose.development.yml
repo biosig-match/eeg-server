@@ -3,21 +3,25 @@ x-common-logging: &common-logging
   options:
     max-size: '10m'
     max-file: '3'
+
 x-postgres-env: &postgres-env
   POSTGRES_USER: ${POSTGRES_USER}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
   POSTGRES_DB: ${POSTGRES_DB}
   POSTGRES_HOST: ${POSTGRES_HOST}
+
 x-rabbitmq-env: &rabbitmq-env
   RABBITMQ_USER: ${RABBITMQ_USER}
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
   RABBITMQ_HOST: ${RABBITMQ_HOST}
+
 x-object-storage-env: &object-storage-env
   OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT}
   OBJECT_STORAGE_PORT: ${OBJECT_STORAGE_PORT}
   OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY}
   OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY}
   OBJECT_STORAGE_USE_SSL: ${OBJECT_STORAGE_USE_SSL}
+
 services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -35,10 +39,12 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
   db:
     image: timescale/timescaledb-ha:pg16-ts2.14
     volumes:
       - pg_data:/home/postgres/pgdata/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -47,10 +53,12 @@ services:
       - eeg-network
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost']
+
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 20s
+
   db-init:
     image: postgres:16-alpine
     restart: 'no'
@@ -59,32 +67,31 @@ services:
         condition: service_healthy
     environment:
       <<: *postgres-env
+    volumes:
+      - ./db:/initdb:ro
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -euo pipefail
+        echo "Listing /initdb:"; ls -lah /initdb || true
+        # Wait for DB
         until pg_isready -h "$$POSTGRES_HOST" -p 5432 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"; do
           sleep 2
         done
-        echo "Applying SQL files in /initdb ..."
-        found=false
-        for f in /initdb/*.sql; do
-          if [ -f "$$f" ]; then
-            found=true
-            echo ">> psql -f $$f"
-            psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" --set ON_ERROR_STOP=on -f "$$f"
-          fi
-        done
-        if [ "$$found" = false ]; then
-          echo "❌ No .sql files found under /initdb"
-          exit 1
+        # Check if a representative table already exists (idempotent)
+        EXISTS=$$(psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" -Atqc \
+          "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='raw_data_objects');")
+        if [ "$$EXISTS" = "t" ]; then
+          echo "✅ Schema already present. Skipping."
+          exit 0
         fi
+        echo "▶ Applying schema from /initdb/init.sql …"
+        psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" --set ON_ERROR_STOP=on -f /initdb/init.sql
         echo "✅ Database schema initialized."
-    volumes:
-      - ../db:/initdb:ro
     networks:
       - eeg-network
+
   object-storage:
     image: chrislusf/seaweedfs:latest
     volumes:
@@ -96,6 +103,7 @@ services:
       server -dir=/data -s3 -s3.port=${OBJECT_STORAGE_PORT} -s3.port.grpc=18333 -filer -filer.port=8888 -filer.port.grpc=18888 -ip=object-storage -ip.bind=0.0.0.0 -volume.port=8080 -volume.port.grpc=18080 -volume.max=0 -master.port=9333 -master.port.grpc=19333
     networks:
       - eeg-network
+
   object-storage-bootstrap:
     image: alpine:3.20
     restart: 'no'
@@ -162,6 +170,7 @@ services:
         echo "✅ Bucket bootstrap completed."
     networks:
       - eeg-network
+
   collector:
     build:
       context: ..
@@ -204,8 +213,6 @@ services:
         condition: service_healthy
       db:
         condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
     environment:
       <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
@@ -225,6 +232,7 @@ services:
           cpus: '1.0'
           memory: 512M
     logging: *common-logging
+
   media_processor:
     build:
       context: ..
@@ -239,8 +247,6 @@ services:
         condition: service_healthy
       db:
         condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
     environment:
       <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
@@ -260,6 +266,7 @@ services:
           cpus: '1.0'
           memory: 512M
     logging: *common-logging
+
   realtime_analyzer:
     build:
       context: ..
@@ -285,11 +292,12 @@ services:
           cpus: '1.0'
           memory: 512M
     logging: *common-logging
+
   observability_dashboard:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-    args:
+      args:
         SERVICE_NAME: observability_dashboard
     restart: unless-stopped
     depends_on:
@@ -329,6 +337,7 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
+
   ingress:
     build: ../nginx
     restart: unless-stopped
@@ -359,10 +368,11 @@ services:
           cpus: '0.5'
           memory: 256M
     logging: *common-logging
+
   session_manager:
     build:
       context: ..
-    dockerfile: docker/Dockerfile.bun
+      dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: session_manager
     restart: unless-stopped
@@ -373,8 +383,6 @@ services:
         condition: service_healthy
       auth_manager:
         condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       PORT: 3000
@@ -397,6 +405,7 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
+
   stimulus_asset_processor:
     build:
       context: ..
@@ -410,8 +419,6 @@ services:
       rabbitmq:
         condition: service_healthy
       object-storage-bootstrap:
-        condition: service_completed_successfully
-      db-init:
         condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
@@ -431,9 +438,11 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
+
   auth_manager:
     build:
       context: ..
+
       dockerfile: docker/Dockerfile.bun
       args:
         SERVICE_NAME: auth_manager
@@ -458,6 +467,7 @@ services:
           cpus: '0.3'
           memory: 256M
     logging: *common-logging
+
   data_linker:
     build:
       context: ..
@@ -470,8 +480,6 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *rabbitmq-env]
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
@@ -490,6 +498,7 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
+
   event_corrector:
     build:
       context: ..
@@ -503,8 +512,6 @@ services:
       rabbitmq:
         condition: service_healthy
       object-storage-bootstrap:
-        condition: service_completed_successfully
-      db-init:
         condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
@@ -525,6 +532,7 @@ services:
           cpus: '0.5'
           memory: 384M
     logging: *common-logging
+
   bids_exporter:
     build:
       context: ..
@@ -539,8 +547,6 @@ services:
       db:
         condition: service_healthy
       object-storage-bootstrap:
-        condition: service_completed_successfully
-      db-init:
         condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *object-storage-env]
@@ -563,6 +569,7 @@ services:
           cpus: '0.5'
           memory: 512M
     logging: *common-logging
+
   erp_neuro_marketing:
     build:
       context: ..
@@ -578,8 +585,6 @@ services:
         condition: service_healthy
       bids_exporter:
         condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
     volumes:
       - bids_exports_volume:/export_data
     environment:
@@ -603,11 +608,13 @@ services:
           cpus: '1.0'
           memory: 768M
     logging: *common-logging
+
 volumes:
   pg_data:
   object_storage_data:
   bids_exports_volume:
   rabbitmq_data:
+
 networks:
   eeg-network:
     driver: bridge
