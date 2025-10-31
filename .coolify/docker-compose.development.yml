@@ -15,6 +15,7 @@ x-rabbitmq-env: &rabbitmq-env
   RABBITMQ_USER: ${RABBITMQ_USER}
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
   RABBITMQ_HOST: ${RABBITMQ_HOST}
+  RABBITMQ_PORT: ${RABBITMQ_PORT}
 
 x-object-storage-env: &object-storage-env
   OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT}
@@ -29,6 +30,7 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
+      - RABBITMQ_DEFAULT_VHOST=/
       - RABBITMQ_NODENAME=${RABBITMQ_NODENAME:-rabbit@rabbitmq}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -44,6 +46,8 @@ services:
     image: timescale/timescaledb-ha:pg16-ts2.14
     volumes:
       - pg_data:/home/postgres/pgdata/data
+      # ⚠️ 初期化は db-init に一元化。Timescale 側への init.sql マウントはしない
+      # - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -60,8 +64,7 @@ services:
     image: postgres:16-alpine
     restart: 'no'
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     environment:
       <<: *postgres-env
     volumes:
@@ -73,42 +76,41 @@ services:
         set -euo pipefail
         echo "Listing /initdb:"; ls -lah /initdb || true
         echo "Using Postgres host: $${POSTGRES_HOST}, database: $${POSTGRES_DB}, user: $${POSTGRES_USER}"
+
+        # DB 起動待ち
         until pg_isready -h "$${POSTGRES_HOST}" -p "$${POSTGRES_PORT:-5432}" -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"; do
           sleep 2
         done
         DB_URL="postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@$${POSTGRES_HOST}:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB}"
 
-        # 既存スキーマ有無
-        HAS_BASE=$$(psql "$$DB_URL" -Atqc "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='raw_data_objects');")
+        # 既存スキーマ有無（代表テーブル）
+        HAS_BASE=$$(psql "$$DB_URL" -Atqc \
+          "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='raw_data_objects');")
         if [ "$$HAS_BASE" = "t" ]; then
           echo "NOTE: Existing schema detected. Re-applying SQL files to capture new tables/migrations."
         else
           echo "Applying initial schema..."
         fi
 
-        # 適用対象の SQL 列挙（/initdb/init.sql が非空ならそれを優先。なければ再帰的に *.sql をソートして適用）
-        if [ -s /initdb/init.sql ]; then
-          SQL_FILES="/initdb/init.sql"
-        else
-          SQL_FILES=$$(find /initdb -maxdepth 2 -type f -name '*.sql' ! -name '.*' | sort || true)
-        fi
+        # /initdb 配下から 0 バイトを除いた .sql を再帰検索・ソート
+        FILES=$$(find /initdb -maxdepth 3 -type f -name '*.sql' -not -size 0c -print | sort || true)
 
-        if [ -z "$$SQL_FILES" ]; then
-          echo "❌ ERROR: No SQL files found under /initdb. Aborting."
+        if [ -z "$$FILES" ]; then
+          echo "❌ ERROR: No non-empty .sql files found under /initdb. Aborting."
           exit 1
         fi
 
-        for f in $$SQL_FILES; do
+        # 適用
+        for f in $$FILES; do
           echo "▶ Applying: $$f"
           psql "$$DB_URL" --set ON_ERROR_STOP=on -f "$$f"
         done
 
-        # 代表テーブルの存在チェック（必要に応じて追加）
-        CHECKS=("experiment_participants" "raw_data_objects")
-        for tbl in $${CHECKS[@]:-experiment_participants raw_data_objects}; do
+        # POSIX sh 互換で検証（Bash配列は使わない）
+        for tbl in experiment_participants raw_data_objects; do
           OK=$$(psql "$$DB_URL" -Atqc "SELECT to_regclass('public.$$tbl') IS NOT NULL;")
           if [ "$$OK" != "t" ]; then
-            echo "❌ ERROR: table '$$tbl' not found after applying SQL!"
+            echo "❌ ERROR: table '$$tbl' not found after SQL apply!"
             exit 1
           fi
         done
@@ -135,8 +137,7 @@ services:
     restart: 'no'
     exclude_from_hc: true
     depends_on:
-      object-storage:
-        condition: service_started
+      object-storage: { condition: service_started }
     environment:
       - OBJECT_STORAGE_ENDPOINT=${OBJECT_STORAGE_ENDPOINT}
       - OBJECT_STORAGE_PORT=${OBJECT_STORAGE_PORT}
@@ -195,7 +196,7 @@ services:
       rabbitmq: { condition: service_healthy }
     environment:
       <<: *rabbitmq-env
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
     networks: [eeg-network]
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
@@ -219,7 +220,7 @@ services:
       db: { condition: service_healthy }
     environment:
       <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
     networks: [eeg-network]
@@ -245,7 +246,7 @@ services:
       db: { condition: service_healthy }
     environment:
       <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
     networks: [eeg-network]
@@ -360,6 +361,7 @@ services:
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       PORT: 3000
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
       STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
@@ -388,6 +390,7 @@ services:
       object-storage-bootstrap: { condition: service_completed_successfully }
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
     networks: [eeg-network]
@@ -412,7 +415,6 @@ services:
     environment:
       <<: *postgres-env
       PORT: 3000
-      # 👇 明示的に DATABASE_URL を渡す（getaddrinfo ENOTFOUND 回避）
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
     networks: [eeg-network]
     healthcheck:
@@ -436,6 +438,7 @@ services:
       rabbitmq: { condition: service_healthy }
     environment:
       <<: [*postgres-env, *rabbitmq-env]
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
     networks: [eeg-network]
@@ -461,6 +464,7 @@ services:
       object-storage-bootstrap: { condition: service_completed_successfully }
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
       SAMPLE_RATE: 256
