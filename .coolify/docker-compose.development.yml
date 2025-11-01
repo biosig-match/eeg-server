@@ -90,7 +90,8 @@ services:
           echo "Applying initial schema..."
         fi
 
-        FILES=$$(find /initdb -maxdepth 3 -type f -name '*.sql' -not -size 0c -print | sort || true)
+        find /initdb -maxdepth 3 -type f -name '*.sql' -not -size 0c -print
+        FILES="/initdb/init.sql"
 
         echo "$$FILES"
         ls -lah /initdb
