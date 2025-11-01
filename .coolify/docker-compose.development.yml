@@ -1,9 +1,3 @@
-# .coolify/docker-compose.development.yml (FULL)
-# Changes in this version
-# - db-init: robust, POSIX-safe logging (no stray "\n" inside quotes), portable file-size listing, strict validation
-# - db-init: mounts ../db:/initdb:ro so Coolify (cwd=.coolify) reaches repo-root db/
-# - object-storage-bootstrap: rewrote s3cfg writes using printf blocks (no broken newlines)
-
 x-common-logging: &common-logging
   driver: json-file
   options:
@@ -15,13 +9,11 @@ x-postgres-env: &postgres-env
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
   POSTGRES_DB: ${POSTGRES_DB}
   POSTGRES_HOST: ${POSTGRES_HOST}
-  POSTGRES_PORT: ${POSTGRES_PORT}
 
 x-rabbitmq-env: &rabbitmq-env
   RABBITMQ_USER: ${RABBITMQ_USER}
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
   RABBITMQ_HOST: ${RABBITMQ_HOST}
-  RABBITMQ_PORT: ${RABBITMQ_PORT}
 
 x-object-storage-env: &object-storage-env
   OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT}
@@ -36,11 +28,11 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
-      - RABBITMQ_DEFAULT_VHOST=/
       - RABBITMQ_NODENAME=${RABBITMQ_NODENAME:-rabbit@rabbitmq}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', 'check_running', '-q']
       interval: 10s
@@ -52,15 +44,17 @@ services:
     image: timescale/timescaledb-ha:pg16-ts2.14
     volumes:
       - pg_data:/home/postgres/pgdata/data
-      # ⚠️ 初期化は db-init に一元化。Timescale 側への init.sql マウントはしない
-      # - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      # IMPORTANT: keep an init script for first-time empty volume bootstrap
+      - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost']
+
       interval: 5s
       timeout: 5s
       retries: 10
@@ -70,93 +64,34 @@ services:
     image: postgres:16-alpine
     restart: 'no'
     depends_on:
-      db: { condition: service_healthy }
+      db:
+        condition: service_healthy
     environment:
       <<: *postgres-env
     volumes:
-      # IMPORTANT: Coolify runs from ./.coolify, so we must step out to the repo root
-      - ../db:/initdb:ro
+      - ./db:/initdb:ro
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -euo pipefail
-
-        printf '[db-init] pwd: %s\n' "$(pwd)"
-        printf '[db-init] whoami: %s\n' "$(whoami)"
-        printf '[db-init] Using Postgres host: %s, database: %s, user: %s\n' "${POSTGRES_HOST}" "${POSTGRES_DB}" "${POSTGRES_USER}"
-
-        echo "[db-init] Listing /initdb:"; ls -lah /initdb || true
-
-        echo "[db-init] SQL files (maxdepth 2 with sizes):"
-        FILES_LIST="$(find /initdb -maxdepth 2 -type f -name '*.sql' 2>/dev/null || true)"
-        if [ -n "${FILES_LIST}" ]; then
-          for f in ${FILES_LIST}; do
-            [ -f "${f}" ] || continue
-            sz=$(wc -c <"${f}" | tr -d '[:space:]')
-            printf '  - %s %s bytes\n' "${f}" "${sz}"
-          done
-        else
-          echo "  (none)"
-        fi
-
-        # DB 起動待ち
-        until pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"; do
-          printf '[db-init] Waiting for DB at %s:%s ...\n' "${POSTGRES_HOST}" "${POSTGRES_PORT:-5432}"
+        echo "Listing /initdb:"; ls -lah /initdb || true
+        # Wait for DB
+        until pg_isready -h "$$POSTGRES_HOST" -p 5432 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"; do
           sleep 2
         done
-
-        REAL_DB_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}"
-        MASKED_DB_URL="postgres://${POSTGRES_USER}:****@${POSTGRES_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}"
-        printf '[db-init] psql client: %s\n' "$(psql --version)"
-        printf '[db-init] server: %s\n' "$(psql "${REAL_DB_URL}" -Atqc 'select version();')"
-        printf '[db-init] DB_URL: %s\n' "${MASKED_DB_URL}"
-
-        # 既存スキーマ有無（代表テーブル）
-        HAS_BASE=$(psql "${REAL_DB_URL}" -Atqc \
+        # Check if a representative table already exists (idempotent)
+        EXISTS=$$(psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" -Atqc \
           "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='raw_data_objects');")
-        if [ "${HAS_BASE}" = "t" ]; then
-          echo "[db-init] NOTE: Existing schema detected. Re-applying SQL files to capture new tables/migrations."
-        else
-          echo "[db-init] Applying initial schema..."
+        if [ "$$EXISTS" = "t" ]; then
+          echo "✅ Schema already present. Skipping."
+          exit 0
         fi
-
-        # /initdb 配下から 0 バイトを除いた .sql を再帰検索・ソート
-        ALL_FILES="$(find /initdb -maxdepth 3 -type f -name '*.sql' 2>/dev/null || true)"
-        APPLY_FILES=""
-        for f in ${ALL_FILES}; do
-          [ -s "${f}" ] && APPLY_FILES="${APPLY_FILES} ${f}"
-        done
-        # sort file list to ensure stable order
-        APPLY_FILES="$(printf '%s\n' ${APPLY_FILES} | awk 'NF' | sort)"
-
-        if [ -z "${APPLY_FILES}" ]; then
-          echo "❌ [db-init] ERROR: No non-empty .sql files found under /initdb. Aborting."
-          exit 1
-        fi
-
-        echo "[db-init] Files to apply:"
-        for f in ${APPLY_FILES}; do
-          printf '  - %s\n' "${f}"
-        done
-
-        # 適用
-        for f in ${APPLY_FILES}; do
-          echo "▶ Applying: ${f}"
-          psql "${REAL_DB_URL}" --set ON_ERROR_STOP=on -f "${f}"
-        done
-
-        # POSIX sh 互換で検証
-        for tbl in experiment_participants raw_data_objects; do
-          OK=$(psql "${REAL_DB_URL}" -Atqc "SELECT to_regclass('public.${tbl}') IS NOT NULL;")
-          if [ "${OK}" != "t" ]; then
-            echo "❌ ERROR: table '${tbl}' not found after SQL apply!"
-            echo "[db-init] public schema tables:"; psql "${REAL_DB_URL}" -c "\\dt+ public.*" || true
-            exit 1
-          fi
-        done
-        echo "✅ [db-init] Database schema synchronized."
-    networks: [eeg-network]
+        echo "▶ Applying schema from /initdb/init.sql …"
+        psql "postgres://$$POSTGRES_USER:$$POSTGRES_PASSWORD@$$POSTGRES_HOST:5432/$$POSTGRES_DB" --set ON_ERROR_STOP=on -f /initdb/init.sql
+        echo "✅ Database schema initialized."
+    networks:
+      - eeg-network
 
   object-storage:
     image: chrislusf/seaweedfs:latest
@@ -166,19 +101,17 @@ services:
       - AWS_ACCESS_KEY_ID=${OBJECT_STORAGE_ACCESS_KEY}
       - AWS_SECRET_ACCESS_KEY=${OBJECT_STORAGE_SECRET_KEY}
     command: >
-      server -dir=/data -s3 -s3.port=${OBJECT_STORAGE_PORT} -s3.port.grpc=18333
-      -filer -filer.port=8888 -filer.port.grpc=18888
-      -ip=object-storage -ip.bind=0.0.0.0
-      -volume.port=8080 -volume.port.grpc=18080 -volume.max=0
-      -master.port=9333 -master.port.grpc=19333
-    networks: [eeg-network]
+      server -dir=/data -s3 -s3.port=${OBJECT_STORAGE_PORT} -s3.port.grpc=18333 -filer -filer.port=8888 -filer.port.grpc=18888 -ip=object-storage -ip.bind=0.0.0.0 -volume.port=8080 -volume.port.grpc=18080 -volume.max=0 -master.port=9333 -master.port.grpc=19333
+    networks:
+      - eeg-network
 
   object-storage-bootstrap:
     image: alpine:3.20
     restart: 'no'
     exclude_from_hc: true
     depends_on:
-      object-storage: { condition: service_started }
+      object-storage:
+        condition: service_started
     environment:
       - OBJECT_STORAGE_ENDPOINT=${OBJECT_STORAGE_ENDPOINT}
       - OBJECT_STORAGE_PORT=${OBJECT_STORAGE_PORT}
@@ -195,43 +128,41 @@ services:
       - |
         set -euo pipefail
         apk add --no-cache s3cmd
-
-        if [ "${OBJECT_STORAGE_USE_SSL}" = "true" ]; then
-          SCHEME=https
-          USE_HTTPS=True
-        else
-          SCHEME=http
-          USE_HTTPS=False
-        fi
-
-        # write s3cmd config atomically without broken newlines
-        {
-          printf '%s\n' '[default]'
-          printf 'access_key = %s\n' "${OBJECT_STORAGE_ACCESS_KEY}"
-          printf 'secret_key = %s\n' "${OBJECT_STORAGE_SECRET_KEY}"
-          printf 'host_base = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}"
-          printf 'host_bucket = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}"
-          printf 'use_https = %s\n' "$${USE_HTTPS}"
-          printf '%s\n' 'check_ssl_certificate = False'
-          printf '%s\n' 'check_ssl_hostname = False'
-          printf '%s\n' 'signature_v2 = False'
-        } > /tmp/s3cfg
-
-        printf '[obj-bootstrap] Waiting for object storage endpoint %s://%s:%s ...\n' "${SCHEME}" "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}"
-        for i in $(seq 1 30); do
-          if s3cmd --config=/tmp/s3cfg ls >/dev/null 2>&1; then break; fi
-          if [ "$i" -eq 30 ]; then echo "❌ ERROR: Object storage not ready."; exit 1; fi
+        SCHEME=$( [ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo https || echo http )
+        ENDPOINT="$${SCHEME}://${OBJECT_STORAGE_ENDPOINT}:${OBJECT_STORAGE_PORT}"
+        USE_HTTPS=$( [ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo True || echo False )
+        printf '[default]\n' > /tmp/s3cfg
+        printf 'access_key = %s\n' "${OBJECT_STORAGE_ACCESS_KEY}" >> /tmp/s3cfg
+        printf 'secret_key = %s\n' "${OBJECT_STORAGE_SECRET_KEY}" >> /tmp/s3cfg
+        printf 'host_base = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
+        printf 'host_bucket = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
+        printf 'use_https = %s\n' "$${USE_HTTPS}" >> /tmp/s3cfg
+        printf 'check_ssl_certificate = False\n' >> /tmp/s3cfg
+        printf 'check_ssl_hostname = False\n' >> /tmp/s3cfg
+        printf 'signature_v2 = False\n' >> /tmp/s3cfg
+        echo "Waiting for object storage endpoint $${ENDPOINT}..."
+        MAX_RETRIES=30
+        RETRY_COUNT=0
+        until s3cmd --config=/tmp/s3cfg ls >/dev/null 2>&1; do
+          RETRY_COUNT=$$((RETRY_COUNT + 1))
+          if [ $${RETRY_COUNT} -ge $${MAX_RETRIES} ]; then
+            echo "❌ ERROR: Object storage did not become ready after $${MAX_RETRIES} attempts (60 seconds). Exiting."
+            exit 1
+          fi
           sleep 2
         done
         echo "✅ Object storage endpoint is ready."
 
         ensure_bucket() {
-          [ -z "$1" ] && return 0
-          if s3cmd --config=/tmp/s3cfg ls "s3://$1" >/dev/null 2>&1; then
-            echo "✅ Bucket $1 already exists."
+          BUCKET="$1"
+          if [ -z "$${BUCKET}" ]; then
+            return 0
+          fi
+          if s3cmd --config=/tmp/s3cfg ls "s3://$${BUCKET}" >/dev/null 2>&1; then
+            echo "✅ Bucket $${BUCKET} already exists."
           else
-            s3cmd --config=/tmp/s3cfg mb "s3://$1"
-            echo "✅ Bucket $1 created."
+            s3cmd --config=/tmp/s3cfg mb "s3://$${BUCKET}"
+            echo "✅ Bucket $${BUCKET} created."
           fi
         }
         ensure_bucket "${OBJECT_STORAGE_RAW_DATA_BUCKET}"
@@ -239,20 +170,24 @@ services:
         ensure_bucket "${OBJECT_STORAGE_BIDS_EXPORTS_BUCKET}"
         ensure_bucket "${OBJECT_STORAGE_ERP_MODELS_BUCKET}"
         echo "✅ Bucket bootstrap completed."
-    networks: [eeg-network]
+    networks:
+      - eeg-network
 
   collector:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: collector }
+      args:
+        SERVICE_NAME: collector
     restart: unless-stopped
     depends_on:
-      rabbitmq: { condition: service_healthy }
+      rabbitmq:
+        condition: service_healthy
     environment:
       <<: *rabbitmq-env
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
-    networks: [eeg-network]
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
       interval: 10s
@@ -260,25 +195,33 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 256M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     logging: *common-logging
 
   processor:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: processor }
+      args:
+        SERVICE_NAME: processor
     restart: unless-stopped
     depends_on:
-      object-storage-bootstrap: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
-      db: { condition: service_healthy }
+      object-storage-bootstrap:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     environment:
       <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3010/health']
       interval: 10s
@@ -286,25 +229,33 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '1.0', memory: 512M } }
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
     logging: *common-logging
 
   media_processor:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: media_processor }
+      args:
+        SERVICE_NAME: media_processor
     restart: unless-stopped
     depends_on:
-      object-storage-bootstrap: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
-      db: { condition: service_healthy }
+      object-storage-bootstrap:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     environment:
       <<: [*rabbitmq-env, *postgres-env, *object-storage-env]
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3020/health']
       interval: 10s
@@ -312,19 +263,25 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '1.0', memory: 512M } }
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
     logging: *common-logging
 
   realtime_analyzer:
     build:
       context: ..
-    dockerfile: docker/Dockerfile.python
-      args: { SERVICE_NAME: realtime_analyzer }
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_NAME: realtime_analyzer
     restart: unless-stopped
     command: gunicorn --bind 0.0.0.0:5002 --workers 1 --log-level debug 'src.main:app'
     depends_on:
-      rabbitmq: { condition: service_healthy }
-    networks: [eeg-network]
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:5002/health']
       interval: 10s
@@ -332,19 +289,26 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '1.0', memory: 512M } }
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
     logging: *common-logging
 
   observability_dashboard:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: observability_dashboard }
+      args:
+        SERVICE_NAME: observability_dashboard
     restart: unless-stopped
     depends_on:
-      rabbitmq: { condition: service_healthy }
-      db: { condition: service_healthy }
-      object-storage: { condition: service_started }
+      rabbitmq:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      object-storage:
+        condition: service_started
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       RABBITMQ_MGMT_PORT: ${RABBITMQ_MGMT_PORT}
@@ -361,7 +325,8 @@ services:
       OBSERVABILITY_BASIC_USER: ${OBSERVABILITY_BASIC_USER:-observer}
       OBSERVABILITY_BASIC_PASSWORD: ${OBSERVABILITY_BASIC_PASSWORD:-changeme}
       OBSERVABILITY_BASIC_REALM: ${OBSERVABILITY_BASIC_REALM:-Observability Dashboard}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:9000/health']
       interval: 10s
@@ -369,30 +334,30 @@ services:
       retries: 5
       start_period: 15s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 384M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
     logging: *common-logging
 
   ingress:
     build: ../nginx
     restart: unless-stopped
     depends_on:
-      collector: { condition: service_healthy }
-      realtime_analyzer: { condition: service_healthy }
-      session_manager: { condition: service_healthy }
-      auth_manager: { condition: service_healthy }
-      erp_neuro_marketing: { condition: service_healthy }
-      bids_exporter: { condition: service_healthy }
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.ingress-http.rule=Host(`dev-eeg.satou-jayo.cc`) && PathPrefix(`/`)
-      - traefik.http.routers.ingress-http.entrypoints=http
-      - traefik.http.routers.ingress-http.service=ingress-service
-      - traefik.http.routers.ingress-https.rule=Host(`dev-eeg.satou-jayo.cc`) && PathPrefix(`/`)
-      - traefik.http.routers.ingress-https.entrypoints=https
-      - traefik.http.routers.ingress-https.tls=true
-      - traefik.http.routers.ingress-https.service=ingress-service
-      - traefik.http.services.ingress-service.loadbalancer.server.port=80
-    networks: [eeg-network]
+      collector:
+        condition: service_healthy
+      realtime_analyzer:
+        condition: service_healthy
+      session_manager:
+        condition: service_healthy
+      auth_manager:
+        condition: service_healthy
+      erp_neuro_marketing:
+        condition: service_healthy
+      bids_exporter:
+        condition: service_healthy
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://localhost/nginx-health']
       interval: 10s
@@ -400,29 +365,36 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 256M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     logging: *common-logging
 
   session_manager:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: session_manager }
+      args:
+        SERVICE_NAME: session_manager
     restart: unless-stopped
     depends_on:
-      db: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
-      auth_manager: { condition: service_healthy }
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth_manager:
+        condition: service_healthy
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
       PORT: 3000
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
       STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
       AUTH_MANAGER_URL: ${AUTH_MANAGER_URL}
       BIDS_EXPORTER_URL: ${BIDS_EXPORTER_URL}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
       interval: 10s
@@ -430,25 +402,32 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 384M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
     logging: *common-logging
 
   stimulus_asset_processor:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: stimulus_asset_processor }
+      args:
+        SERVICE_NAME: stimulus_asset_processor
     restart: unless-stopped
     depends_on:
-      db: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
-      object-storage-bootstrap: { condition: service_completed_successfully }
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      object-storage-bootstrap:
+        condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       STIMULUS_ASSET_QUEUE: ${STIMULUS_ASSET_QUEUE}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3050/health']
       interval: 10s
@@ -456,22 +435,28 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 384M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
     logging: *common-logging
 
   auth_manager:
     build:
       context: ..
+
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: auth_manager }
+      args:
+        SERVICE_NAME: auth_manager
     restart: unless-stopped
     depends_on:
-      db: { condition: service_healthy }
+      db:
+        condition: service_healthy
     environment:
       <<: *postgres-env
       PORT: 3000
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
       interval: 10s
@@ -479,24 +464,30 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.3', memory: 256M } }
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
     logging: *common-logging
 
   data_linker:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: data_linker }
+      args:
+        SERVICE_NAME: data_linker
     restart: unless-stopped
     depends_on:
-      db: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       <<: [*postgres-env, *rabbitmq-env]
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       DATA_LINKER_QUEUE: ${DATA_LINKER_QUEUE}
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3030/health']
       interval: 10s
@@ -504,26 +495,33 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 384M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
     logging: *common-logging
 
   event_corrector:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bun
-      args: { SERVICE_NAME: event_corrector }
+      args:
+        SERVICE_NAME: event_corrector
     restart: unless-stopped
     depends_on:
-      db: { condition: service_healthy }
-      rabbitmq: { condition: service_healthy }
-      object-storage-bootstrap: { condition: service_completed_successfully }
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      object-storage-bootstrap:
+        condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *rabbitmq-env, *object-storage-env]
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/%2f
       EVENT_CORRECTION_QUEUE: ${EVENT_CORRECTION_QUEUE}
       OBJECT_STORAGE_RAW_DATA_BUCKET: ${OBJECT_STORAGE_RAW_DATA_BUCKET}
       SAMPLE_RATE: 256
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:3040/health']
       interval: 10s
@@ -531,21 +529,27 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 384M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
     logging: *common-logging
 
   bids_exporter:
     build:
       context: ..
       dockerfile: docker/Dockerfile.python
-      args: { SERVICE_NAME: bids_exporter }
+      args:
+        SERVICE_NAME: bids_exporter
     restart: unless-stopped
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     volumes:
       - bids_exports_volume:/export_data
     depends_on:
-      db: { condition: service_healthy }
-      object-storage-bootstrap: { condition: service_completed_successfully }
+      db:
+        condition: service_healthy
+      object-storage-bootstrap:
+        condition: service_completed_successfully
     environment:
       <<: [*postgres-env, *object-storage-env]
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
@@ -553,7 +557,8 @@ services:
       OBJECT_STORAGE_MEDIA_BUCKET: ${OBJECT_STORAGE_MEDIA_BUCKET}
       OBJECT_STORAGE_BIDS_EXPORTS_BUCKET: ${OBJECT_STORAGE_BIDS_EXPORTS_BUCKET}
       EXPORT_DATA_PATH: /export_data
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
       interval: 10s
@@ -561,20 +566,27 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '0.5', memory: 512M } }
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     logging: *common-logging
 
   erp_neuro_marketing:
     build:
       context: ..
       dockerfile: docker/Dockerfile.python
-      args: { SERVICE_NAME: erp_neuro_marketing }
+      args:
+        SERVICE_NAME: erp_neuro_marketing
     restart: unless-stopped
     command: uvicorn src.main:app --host 0.0.0.0 --port 8001
     depends_on:
-      db: { condition: service_healthy }
-      auth_manager: { condition: service_healthy }
-      bids_exporter: { condition: service_healthy }
+      db:
+        condition: service_healthy
+      auth_manager:
+        condition: service_healthy
+      bids_exporter:
+        condition: service_healthy
     volumes:
       - bids_exports_volume:/export_data
     environment:
@@ -584,7 +596,8 @@ services:
       AUTH_MANAGER_URL: http://auth_manager:3000
       SHARED_VOLUME_PATH: /export_data
       GEMINI_API_KEY: ${GEMINI_API_KEY}
-    networks: [eeg-network]
+    networks:
+      - eeg-network
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8001/health']
       interval: 10s
@@ -592,7 +605,10 @@ services:
       retries: 5
       start_period: 10s
     deploy:
-      resources: { limits: { cpus: '1.0', memory: 768M } }
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 768M
     logging: *common-logging
 
 volumes:
