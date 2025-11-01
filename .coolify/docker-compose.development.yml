@@ -1,9 +1,3 @@
-# .coolify/docker-compose.development.yml — FIXED
-# Key fixes for the "no service selected" error:
-# 1) Corrected build.indentation (e.g., realtime_analyzer had a mis-indented dockerfile key).
-# 2) Kept db-init mount to ../db and made entrypoint logging POSIX-safe.
-# 3) Cleaned printf/newline usage in both db-init and object-storage-bootstrap.
-
 x-common-logging: &common-logging
   driver: json-file
   options:
@@ -72,79 +66,52 @@ services:
     environment:
       <<: *postgres-env
     volumes:
-      # Coolify runs from ./.coolify → step out to repo root
-      - ../db:/initdb:ro
+      - ./db:/initdb:ro
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -euo pipefail
-        printf '[db-init] pwd: %s\n' "$(pwd)"
-        printf '[db-init] whoami: %s\n' "$(whoami)"
-        printf '[db-init] Using Postgres host: %s, database: %s, user: %s\n' "${POSTGRES_HOST}" "${POSTGRES_DB}" "${POSTGRES_USER}"
+        echo "Listing /initdb:"; ls -lah /initdb || true
+        echo "Using Postgres host: $${POSTGRES_HOST}, database: $${POSTGRES_DB}, user: $${POSTGRES_USER}"
 
-        echo "[db-init] Listing /initdb:"; ls -lah /initdb || true
-        echo "[db-init] SQL files (maxdepth 2 with sizes):"
-        FILES_LIST="$(find /initdb -maxdepth 2 -type f -name '*.sql' 2>/dev/null || true)"
-        if [ -n "${FILES_LIST}" ]; then
-          for f in ${FILES_LIST}; do
-            [ -f "${f}" ] || continue
-            sz=$(wc -c <"${f}" | tr -d '[:space:]')
-            printf '  - %s %s bytes\n' "${f}" "${sz}"
-          done
-        else
-          echo "  (none)"
-        fi
-
-        until pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"; do
-          printf '[db-init] Waiting for DB at %s:%s ...\n' "${POSTGRES_HOST}" "${POSTGRES_PORT:-5432}"
+        until pg_isready -h "$${POSTGRES_HOST}" -p "$${POSTGRES_PORT:-5432}" -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"; do
           sleep 2
         done
+        DB_URL="postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@$${POSTGRES_HOST}:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB}"
 
-        REAL_DB_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}"
-        MASKED_DB_URL="postgres://${POSTGRES_USER}:****@${POSTGRES_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}"
-        printf '[db-init] psql client: %s\n' "$(psql --version)"
-        printf '[db-init] server: %s\n' "$(psql "${REAL_DB_URL}" -Atqc 'select version();')"
-        printf '[db-init] DB_URL: %s\n' "${MASKED_DB_URL}"
-
-        HAS_BASE=$(psql "${REAL_DB_URL}" -Atqc "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='raw_data_objects');")
-        if [ "${HAS_BASE}" = "t" ]; then
-          echo "[db-init] NOTE: Existing schema detected. Re-applying SQL files to capture new tables/migrations."
+        HAS_BASE=$$(psql "$$DB_URL" -Atqc \
+          "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='raw_data_objects');")
+        if [ "$$HAS_BASE" = "t" ]; then
+          echo "NOTE: Existing schema detected. Re-applying SQL files to capture new tables/migrations."
         else
-          echo "[db-init] Applying initial schema..."
+          echo "Applying initial schema..."
         fi
 
-        ALL_FILES="$(find /initdb -maxdepth 3 -type f -name '*.sql' 2>/dev/null || true)"
-        APPLY_FILES=""
-        for f in ${ALL_FILES}; do
-          [ -s "${f}" ] && APPLY_FILES="${APPLY_FILES} ${f}"
-        done
-        APPLY_FILES="$(printf '%s\n' ${APPLY_FILES} | awk 'NF' | sort)"
+        find /initdb -maxdepth 3 -type f -name '*.sql' -not -size 0c -print
+        FILES="/initdb/init.sql"
 
-        if [ -z "${APPLY_FILES}" ]; then
-          echo "❌ [db-init] ERROR: No non-empty .sql files found under /initdb. Aborting."
+        echo "$$FILES"
+        ls -lah /initdb
+
+        if [ -z "$$FILES" ]; then
+          echo "❌ ERROR: No non-empty .sql files found under /initdb. Aborting."
           exit 1
         fi
 
-        echo "[db-init] Files to apply:"
-        for f in ${APPLY_FILES}; do
-          printf '  - %s\n' "${f}"
-        done
-
-        for f in ${APPLY_FILES}; do
-          echo "▶ Applying: ${f}"
-          psql "${REAL_DB_URL}" --set ON_ERROR_STOP=on -f "${f}"
+        for f in $$FILES; do
+          echo "▶ Applying: $$f"
+          psql "$$DB_URL" --set ON_ERROR_STOP=on -f "$$f"
         done
 
         for tbl in experiment_participants raw_data_objects; do
-          OK=$(psql "${REAL_DB_URL}" -Atqc "SELECT to_regclass('public.${tbl}') IS NOT NULL;")
-          if [ "${OK}" != "t" ]; then
-            echo "❌ ERROR: table '${tbl}' not found after SQL apply!"
-            echo "[db-init] public schema tables:"; psql "${REAL_DB_URL}" -c "\\dt+ public.*" || true
+          OK=$$(psql "$$DB_URL" -Atqc "SELECT to_regclass('public.$$tbl') IS NOT NULL;")
+          if [ "$$OK" != "t" ]; then
+            echo "❌ ERROR: table '$$tbl' not found after SQL apply!"
             exit 1
           fi
         done
-        echo "✅ [db-init] Database schema synchronized."
+        echo "✅ Database schema synchronized."
     networks: [eeg-network]
 
   object-storage:
@@ -184,33 +151,22 @@ services:
       - |
         set -euo pipefail
         apk add --no-cache s3cmd
-
-        if [ "${OBJECT_STORAGE_USE_SSL}" = "true" ]; then
-          SCHEME=https; USE_HTTPS=True
-        else
-          SCHEME=http;  USE_HTTPS=False
-        fi
-
-        {
-          printf '%s\n' '[default]'
-          printf 'access_key = %s\n' "${OBJECT_STORAGE_ACCESS_KEY}"
-          printf 'secret_key = %s\n' "${OBJECT_STORAGE_SECRET_KEY}"
-          printf 'host_base = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}"
-          printf 'host_bucket = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}"
-          printf 'use_https = %s\n' "${USE_HTTPS}"
-          printf '%s\n' 'check_ssl_certificate = False'
-          printf '%s\n' 'check_ssl_hostname = False'
-          printf '%s\n' 'signature_v2 = False'
-        } > /tmp/s3cfg
-
-        printf '[obj-bootstrap] Waiting for object storage endpoint %s://%s:%s ...\n' "${SCHEME}" "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}"
+        SCHEME=$([ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo https || echo http)
+        USE_HTTPS=$([ "${OBJECT_STORAGE_USE_SSL}" = "true" ] && echo True || echo False)
+        printf '[default]\n' > /tmp/s3cfg
+        printf 'access_key = %s\n' "${OBJECT_STORAGE_ACCESS_KEY}" >> /tmp/s3cfg
+        printf 'secret_key = %s\n' "${OBJECT_STORAGE_SECRET_KEY}" >> /tmp/s3cfg
+        printf 'host_base = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
+        printf 'host_bucket = %s:%s\n' "${OBJECT_STORAGE_ENDPOINT}" "${OBJECT_STORAGE_PORT}" >> /tmp/s3cfg
+        printf 'use_https = %s\n' "$${USE_HTTPS}" >> /tmp/s3cfg
+        printf 'check_ssl_certificate = False\ncheck_ssl_hostname = False\nsignature_v2 = False\n' >> /tmp/s3cfg
+        echo "Waiting for object storage endpoint ${SCHEME}://${OBJECT_STORAGE_ENDPOINT}:${OBJECT_STORAGE_PORT}..."
         for i in $(seq 1 30); do
           if s3cmd --config=/tmp/s3cfg ls >/dev/null 2>&1; then break; fi
-          if [ "$i" -eq 30 ]; then echo "❌ ERROR: Object storage not ready."; exit 1; fi
+          [ "$i" -eq 30 ] && { echo "❌ ERROR: Object storage not ready."; exit 1; }
           sleep 2
         done
         echo "✅ Object storage endpoint is ready."
-
         ensure_bucket() {
           [ -z "$1" ] && return 0
           if s3cmd --config=/tmp/s3cfg ls "s3://$1" >/dev/null 2>&1; then
