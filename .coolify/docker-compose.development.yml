@@ -68,7 +68,7 @@ services:
     environment:
       <<: *postgres-env
     volumes:
-      - ../db:/initdb:ro
+      - ./db:/initdb:ro
     entrypoint:
       - /bin/sh
       - -c
