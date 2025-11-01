@@ -1,0 +1,84 @@
+name: Generate Coolify Compose Files
+
+on:
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'docker-compose*.yml'
+  pull_request:
+    paths:
+      - 'docker-compose*.yml'
+      - '.coolify/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Generate Coolify compose files
+        run: |
+          mkdir -p .coolify
+
+          # Development環境
+          yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' \
+            docker-compose.yml docker-compose.development.yml \
+            | yq eval 'del(.services.[].container_name) | del(.services.[].ports)' - \
+            > .coolify/docker-compose.development.yml
+
+          # Staging環境
+          yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' \
+            docker-compose.yml docker-compose.staging.yml \
+            | yq eval 'del(.services.[].container_name) | del(.services.[].ports)' - \
+            > .coolify/docker-compose.staging.yml
+
+          # Production環境
+          yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' \
+            docker-compose.yml docker-compose.production.yml \
+            | yq eval 'del(.services.[].container_name) | del(.services.[].ports)' - \
+            > .coolify/docker-compose.production.yml
+
+          # Compose ファイルは .coolify 配下に置かれるため、ビルドコンテキストや
+          # ファイルマウントの相対パスを 1 階層戻す
+          for file in .coolify/docker-compose.*.yml; do
+            sed -i 's#context: \.#context: ..#g' "$file"
+            sed -i 's#- \./#- ../#g' "$file"
+            sed -i 's#build: \./#build: ../#g' "$file"
+            sed -i -E 's/!!merge[[:space:]]+<<:/<<:/g' "$file"
+          done
+
+      - name: Ensure generated files are committed
+        if: github.event_name == 'pull_request'
+        run: |
+          if ! git diff --quiet -- .coolify/; then
+            echo "::error::Generated .coolify compose files differ from committed version. Run the workflow via a branch push or regenerate locally and commit the results."
+            git diff --stat -- .coolify/
+            exit 1
+          fi
+
+      - name: Commit generated files
+        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .coolify/
+          if git diff --staged --quiet; then
+            echo "No changes detected in .coolify/; skipping commit."
+            exit 0
+          fi
+          git commit -m "chore: regenerate Coolify compose files [skip ci]"
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          git push origin "HEAD:${BRANCH}"

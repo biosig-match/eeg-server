@@ -255,6 +255,8 @@ Ingress (Nginx) は以下のエンドポイントを公開します。
    ```
 
    `.env.local` を作成した場合は `docker compose --env-file .env.local -f ...` のように `--env-file` を追加してください。
+   RabbitMQ のメッセージとキューは `rabbitmq_data` ボリュームに永続化されます。
+   `docker compose down -v` を実行するとこのボリュームも削除される点に注意してください。
 
 ### 5.2 モバイルアプリ連携のための開発環境設定（WSL2 + Windows）
 
@@ -462,6 +464,14 @@ VSCode on WSL2 を前提に、以下の手順で保存時フォーマットと�
 
 3. **結果の確認:**
    テスト完了後、ホストマシンの`bids_output`ディレクトリに BIDS 形式のファイル群が生成されていることを確認してください。
+
+### 6.3 RabbitMQ 永続化の確認
+
+1. `docker compose -f docker-compose.yml -f docker-compose.development.yml up -d rabbitmq` で RabbitMQ を起動します。
+2. `docker compose exec rabbitmq rabbitmqctl list_queues` を実行し、対象キューが存在することを確認します。
+3. `tools/dev/run_e2e_test.sh --compose --no-build` や `tools/dummy_data_sender.py` などを利用し、RabbitMQ へメッセージを送信します。
+4. `docker compose restart rabbitmq` でブローカーを再起動します。
+5. 再度 `docker compose exec rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged` を実行し、メッセージやキュー定義が保持されていることを確認します。
 
 ## 7\. 今後の改良点 (Future Improvements)
 

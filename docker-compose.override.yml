@@ -1,0 +1,97 @@
+services:
+  rabbitmq:
+    container_name: eeg_rabbitmq
+    ports:
+      - '${RABBITMQ_MGMT_PORT}:15672'
+      - '${RABBITMQ_PORT}:5672'
+  db:
+    container_name: eeg_db
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+  object-storage:
+    container_name: eeg_object_storage
+    ports:
+      - '${OBJECT_STORAGE_PORT}:${OBJECT_STORAGE_PORT}'
+  collector:
+    container_name: eeg_collector
+    volumes:
+      - ./collector/src:/app/collector/src
+      - ./collector/tsconfig.json:/app/collector/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+  processor:
+    container_name: eeg_processor
+    volumes:
+      - ./processor/src:/app/processor/src
+      - ./processor/tsconfig.json:/app/processor/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
+  media_processor:
+    container_name: eeg_media_processor
+    volumes:
+      - ./media_processor/src:/app/media_processor/src
+      - ./media_processor/tsconfig.json:/app/media_processor/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
+  realtime_analyzer:
+    container_name: eeg_realtime_analyzer
+    volumes:
+      - ./realtime_analyzer/src:/app/src
+  observability_dashboard:
+    container_name: eeg_observability_dashboard
+    ports:
+      - '${OBSERVABILITY_PORT-8090}:9000'
+  ingress:
+    container_name: eeg_ingress
+    ports:
+      - '0.0.0.0:${NGINX_PORT}:80'
+  session_manager:
+    container_name: eeg_session_manager
+    volumes:
+      - ./session_manager/src:/app/session_manager/src
+      - ./session_manager/tsconfig.json:/app/session_manager/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
+  stimulus_asset_processor:
+    container_name: eeg_stimulus_asset_processor
+    volumes:
+      - ./stimulus_asset_processor/src:/app/stimulus_asset_processor/src
+      - ./stimulus_asset_processor/tsconfig.json:/app/stimulus_asset_processor/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
+  auth_manager:
+    container_name: eeg_auth_manager
+    volumes:
+      - ./auth_manager/src:/app/auth_manager/src
+      - ./auth_manager/tsconfig.json:/app/auth_manager/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+  data_linker:
+    container_name: eeg_data_linker
+    volumes:
+      - ./data_linker/src:/app/data_linker/src
+      - ./data_linker/tsconfig.json:/app/data_linker/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+  event_corrector:
+    container_name: eeg_event_corrector
+    volumes:
+      - ./event_corrector/src:/app/event_corrector/src
+      - ./event_corrector/tsconfig.json:/app/event_corrector/tsconfig.json:ro
+      - ./node_modules:/app/node_modules
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - ./shared:/app/shared:ro
+  bids_exporter:
+    container_name: eeg_bids_exporter
+    volumes:
+      - ./bids_exporter/src:/app/src
+  erp_neuro_marketing:
+    container_name: eeg_erp_neuro_marketing
+    volumes:
+      - ./erp_neuro_marketing/src:/app/src
+    ports:
+      - '${ERP_SERVICE_PORT}:8001'

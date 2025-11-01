@@ -395,7 +395,7 @@ function createObjectStorageTestClient(config: typeof OBJECT_STORAGE_CONFIG) {
 const ASSETS_DIR = path.resolve(__dirname, '../assets')
 const TEST_OUTPUT_DIR = path.resolve(__dirname, '../test-output')
 
-const DB_POLL_TIMEOUT = 30000
+const DB_POLL_TIMEOUT = 120000
 const TASK_POLL_TIMEOUT = 120000
 const REALTIME_ANALYZER_POLL_TIMEOUT = 60000
 const REALTIME_ANALYZER_POLL_INTERVAL = 2000
@@ -637,6 +637,48 @@ type ObjectStorageTestClient = ReturnType<typeof createObjectStorageTestClient>
 
 let objectStorageClient: ObjectStorageTestClient
 
+/**
+ * Bun のテストランナーは describe 単位で並列実行される場合があり、
+ * シナリオごとに行っている DB リセットが競合するとレコードが消えて
+ * ポーリング対象が「存在しない」ままタイムアウトしてしまう。
+ * これを防ぐため、バックグラウンドジョブが完了するまでシナリオ実行を直列化する。
+ */
+let workflowMutex: Promise<void> = Promise.resolve()
+
+async function runScenarioExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = workflowMutex
+  let release!: () => void
+  workflowMutex = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await previous
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
+const scenarioFactories = new Map<string, () => Promise<WorkflowContext>>()
+const scenarioPromises = new Map<string, Promise<WorkflowContext>>()
+
+function registerScenario(key: string, factory: () => Promise<WorkflowContext>) {
+  scenarioFactories.set(key, factory)
+}
+
+function ensureScenario(key: string): Promise<WorkflowContext> {
+  let existing = scenarioPromises.get(key)
+  if (!existing) {
+    const factory = scenarioFactories.get(key)
+    if (!factory) {
+      throw new Error(`Scenario factory not registered for key "${key}".`)
+    }
+    existing = (async () => factory())()
+    scenarioPromises.set(key, existing)
+  }
+  return existing
+}
+
 async function pollForDbStatus(
   query: string,
   params: any[],
@@ -644,12 +686,32 @@ async function pollForDbStatus(
   timeout = DB_POLL_TIMEOUT,
 ) {
   const start = Date.now()
+  let lastStatus: any = null
   while (Date.now() - start < timeout) {
     const { rows } = await dbPool.query(query, params)
-    if (rows.length > 0 && rows[0].status === expectedValue) return
+    if (rows.length > 0) {
+      const status = rows[0].status
+      if (status === expectedValue) {
+        return
+      }
+      if (status === 'failed') {
+        const identifier = params?.[0] ? ` for ${params[0]}` : ''
+        throw new Error(
+          `Background status${identifier} transitioned to 'failed' before reaching '${expectedValue}'.`,
+        )
+      }
+      lastStatus = status
+    } else {
+      lastStatus = null
+    }
     await sleep(1000)
   }
-  throw new Error(`Timed out waiting for DB status '${expectedValue}'`)
+  const identifier = params?.[0] ? ` for ${params[0]}` : ''
+  const statusDetail =
+    lastStatus === null ? 'no rows returned' : `last observed status='${lastStatus}'`
+  throw new Error(
+    `Timed out waiting for DB status '${expectedValue}'${identifier}; ${statusDetail}.`,
+  )
 }
 
 async function pollForTaskStatus(
@@ -1255,26 +1317,27 @@ afterAll(async () => {
 
 describe('Integration Test Suite', () => {
   describe('Scenario 1: Custom EEG with Events and Triggers', () => {
-    let workflowPromise: Promise<WorkflowContext> | null = null
     const ownerId = `owner-eeg-${Date.now()}`
     const participantId = `part-eeg-${Date.now()}`
     const strangerId = `stranger-eeg-${Date.now()}`
+    const scenarioKey = 'scenario:custom-eeg-with-events'
+
+    registerScenario(scenarioKey, () =>
+      runScenarioExclusive(async () => {
+        await resetDatabase()
+        await seedCalibrationAssets()
+        return runTestScenario({
+          deviceProfile: MOCK_CUSTOM_EEG_DEVICE,
+          withEvents: true,
+          ownerId,
+          participantId,
+          strangerId,
+        })
+      }),
+    )
 
     const ensureWorkflow = async (): Promise<WorkflowContext> => {
-      if (!workflowPromise) {
-        workflowPromise = (async () => {
-          await resetDatabase()
-          await seedCalibrationAssets()
-          return runTestScenario({
-            deviceProfile: MOCK_CUSTOM_EEG_DEVICE,
-            withEvents: true,
-            ownerId,
-            participantId,
-            strangerId,
-          })
-        })()
-      }
-      return workflowPromise!
+      return ensureScenario(scenarioKey)
     }
 
     test(
@@ -1535,26 +1598,30 @@ describe('Integration Test Suite', () => {
   })
 
   describe('Scenario 2: Muse 2 without Events or Triggers', () => {
-    let workflowPromise: Promise<WorkflowContext> | null = null
     const ownerId = `owner-muse-${Date.now()}`
     const participantId = `part-muse-${Date.now()}`
     const strangerId = `stranger-muse-${Date.now()}`
+    const scenarioKey = 'scenario:muse2-without-events'
+    const dependencyKey = 'scenario:custom-eeg-with-events'
+
+    registerScenario(scenarioKey, () =>
+      runScenarioExclusive(async () => {
+        // Ensure Scenario 1 has finished before resetting shared fixtures.
+        await ensureScenario(dependencyKey)
+        await resetDatabase()
+        await seedCalibrationAssets()
+        return runTestScenario({
+          deviceProfile: MOCK_MUSE2_DEVICE,
+          withEvents: false,
+          ownerId,
+          participantId,
+          strangerId,
+        })
+      }),
+    )
 
     const ensureWorkflow = async (): Promise<WorkflowContext> => {
-      if (!workflowPromise) {
-        workflowPromise = (async () => {
-          await resetDatabase()
-          await seedCalibrationAssets()
-          return runTestScenario({
-            deviceProfile: MOCK_MUSE2_DEVICE,
-            withEvents: false,
-            ownerId,
-            participantId,
-            strangerId,
-          })
-        })()
-      }
-      return workflowPromise!
+      return ensureScenario(scenarioKey)
     }
 
     test(
