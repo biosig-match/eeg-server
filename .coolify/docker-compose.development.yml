@@ -92,6 +92,9 @@ services:
 
         FILES=$$(find /initdb -maxdepth 3 -type f -name '*.sql' -not -size 0c -print | sort || true)
 
+        echo "$$FILES"
+        ls -lah /initdb
+
         if [ -z "$$FILES" ]; then
           echo "❌ ERROR: No non-empty .sql files found under /initdb. Aborting."
           exit 1
